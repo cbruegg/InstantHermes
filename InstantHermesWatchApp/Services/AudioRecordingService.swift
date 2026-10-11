@@ -1,5 +1,5 @@
 //
-//  AudioRecorderManager.swift
+//  AudioRecordingService.swift
 //  InstantHermesWatchApp
 //
 //  Created by Christian Brüggemann on 11.10.26.
@@ -7,7 +7,55 @@
 
 import Foundation
 import AVFoundation
-import Combine
+
+// MARK: - Errors
+
+enum AudioRecordingError: LocalizedError {
+    case permissionDenied
+    case audioSessionConfigurationFailed(Error)
+    case engineStartFailed(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .permissionDenied:
+            return "Microphone permission denied"
+        case .audioSessionConfigurationFailed(let error):
+            return "Failed to configure audio session: \(error.localizedDescription)"
+        case .engineStartFailed(let error):
+            return "Failed to start audio engine: \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - Protocol
+
+/// Abstracts audio recording and streaming, enabling testability and mocking.
+protocol AudioRecordingService: AnyObject {
+    /// Current raw RMS amplitude (thread-safe read). ~0.0–0.5 for speech.
+    var currentRMS: Float { get }
+
+    /// Whether silence has exceeded the threshold (thread-safe read).
+    /// Only true after speech has been detected at least once.
+    var hasExceededSilenceThreshold: Bool { get }
+
+    /// Requests microphone permission.
+    func requestPermission() async -> Bool
+
+    /// Starts recording and streaming. Returns the recording session ID.
+    /// Throws on audio session or engine failure.
+    func start() throws -> UUID
+
+    /// Stops recording immediately. Does not send any submit/cancel signal.
+    func stop()
+
+    /// Sends a submit signal so the server knows the recording is complete.
+    func sendSubmitSignal(recordingID: UUID)
+
+    /// Sends a cancel signal so the server knows the recording was discarded.
+    func sendCancelSignal(recordingID: UUID)
+}
+
+// MARK: - Internal Helpers
 
 /// Thread-safe flag used to signal cancellation from the audio tap callback.
 final class CancellationToken: @unchecked Sendable {
@@ -40,6 +88,7 @@ final class SilenceDetector: @unchecked Sendable {
     private let lock = NSLock()
     private var lastLoudTimestamp: CFAbsoluteTime = 0
     private var hasDetectedSound = false
+    private var _currentRMS: Float = 0
 
     /// How long audio must stay below threshold before triggering.
     let silenceDuration: TimeInterval = 3.0
@@ -47,18 +96,11 @@ final class SilenceDetector: @unchecked Sendable {
     /// RMS amplitude below this is considered silence (~ -40 dBFS).
     let amplitudeThreshold: Float = 0.01
 
-    /// Process an audio buffer. Called from the audio render thread.
-    func processBuffer(_ buffer: AVAudioPCMBuffer) {
-        let rms = Self.calculateRMS(buffer)
-        guard rms > 0 else { return }
-
+    /// Latest RMS amplitude (raw, unscaled). Updated on the audio thread, read from the main actor.
+    var currentRMS: Float {
         lock.lock()
         defer { lock.unlock() }
-
-        if rms > amplitudeThreshold {
-            lastLoudTimestamp = CFAbsoluteTimeGetCurrent()
-            hasDetectedSound = true
-        }
+        return _currentRMS
     }
 
     /// Whether silence has exceeded the threshold. Called from the main actor.
@@ -70,11 +112,26 @@ final class SilenceDetector: @unchecked Sendable {
         return CFAbsoluteTimeGetCurrent() - lastLoudTimestamp >= silenceDuration
     }
 
+    /// Process an audio buffer. Called from the audio render thread.
+    func processBuffer(_ buffer: AVAudioPCMBuffer) {
+        let rms = Self.calculateRMS(buffer)
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        _currentRMS = rms
+        if rms > amplitudeThreshold {
+            lastLoudTimestamp = CFAbsoluteTimeGetCurrent()
+            hasDetectedSound = true
+        }
+    }
+
     func reset() {
         lock.lock()
         defer { lock.unlock() }
         lastLoudTimestamp = CFAbsoluteTimeGetCurrent()
         hasDetectedSound = false
+        _currentRMS = 0
     }
 
     /// RMS (root mean square) amplitude of a PCM buffer — a good proxy for perceived loudness.
@@ -90,74 +147,35 @@ final class SilenceDetector: @unchecked Sendable {
     }
 }
 
-/// Records microphone audio and streams each chunk to an HTTP endpoint.
-@MainActor
-final class AudioRecorderManager: ObservableObject {
-    @Published var isRecording = false
-    @Published var errorMessage: String?
+// MARK: - Implementation
 
+/// Records microphone audio via `AVAudioEngine` and streams chunks to an HTTP endpoint.
+final class AVAudioRecordingService: AudioRecordingService {
     private let audioEngine = AVAudioEngine()
     private let cancellationToken = CancellationToken()
     private let silenceDetector = SilenceDetector()
-    private var silenceCheckTimer: AnyCancellable?
-    private var recordingID: UUID?
 
     // Dummy endpoint — replace with a real server when ready.
     private let endpointURL = URL(string: "http://localhost:8080/audio")!
 
-    // MARK: - Public API
+    // MARK: AudioRecordingService
 
-    /// Starts recording and streaming. Requests microphone permission if needed.
-    func startRecording() {
-        guard !isRecording else { return }
+    var currentRMS: Float { silenceDetector.currentRMS }
 
-        Task {
-            let granted = await withCheckedContinuation { continuation in
-                AVAudioApplication.requestRecordPermission { granted in
-                    continuation.resume(returning: granted)
-                }
+    var hasExceededSilenceThreshold: Bool { silenceDetector.hasExceededSilenceThreshold }
+
+    func requestPermission() async -> Bool {
+        await withCheckedContinuation { continuation in
+            AVAudioApplication.requestRecordPermission { granted in
+                continuation.resume(returning: granted)
             }
-            guard granted else {
-                errorMessage = "Microphone permission denied"
-                return
-            }
-            beginRecording()
         }
     }
 
-    /// Cancels recording — stops without submitting. Sends a cancel signal to the endpoint.
-    func stopRecording() {
-        guard isRecording else { return }
-        let id = recordingID
-        cleanup()
-        if let id {
-            sendActionSignal(recordingID: id, action: "cancel")
-        }
-    }
-
-    /// Submits recording — stops and sends a submit signal so the server knows the audio is complete.
-    func submitRecording() {
-        guard isRecording else { return }
-        let id = recordingID
-        cleanup()
-        if let id {
-            sendActionSignal(recordingID: id, action: "submit")
-        }
-    }
-
-    /// Convenience: cancel then start again.
-    func restartRecording() {
-        stopRecording()
-        startRecording()
-    }
-
-    // MARK: - Private
-
-    private func beginRecording() {
+    func start() throws -> UUID {
         cancellationToken.reset()
         silenceDetector.reset()
-        recordingID = UUID()
-        errorMessage = nil
+        let recordingID = UUID()
 
         // Configure the audio session for recording.
         let session = AVAudioSession.sharedInstance()
@@ -165,8 +183,7 @@ final class AudioRecorderManager: ObservableObject {
             try session.setCategory(.playAndRecord, mode: .default)
             try session.setActive(true)
         } catch {
-            errorMessage = "Failed to configure audio session: \(error.localizedDescription)"
-            return
+            throw AudioRecordingError.audioSessionConfigurationFailed(error)
         }
 
         let inputNode = audioEngine.inputNode
@@ -174,46 +191,41 @@ final class AudioRecorderManager: ObservableObject {
 
         // Capture only Sendable values so the tap callback can run on the audio thread.
         let token = cancellationToken
-        let url = endpointURL
         let detector = silenceDetector
-        let recID = recordingID!
+        let url = endpointURL
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
             guard !token.isCancelled else { return }
             detector.processBuffer(buffer)
-            Self.sendChunk(buffer: buffer, to: url, recordingID: recID)
+            Self.sendChunk(buffer: buffer, to: url, recordingID: recordingID)
         }
 
         do {
             try audioEngine.start()
-            isRecording = true
-            startSilenceCheckTimer()
         } catch {
-            errorMessage = "Failed to start audio engine: \(error.localizedDescription)"
+            throw AudioRecordingError.engineStartFailed(error)
         }
+
+        return recordingID
     }
 
-    private func cleanup() {
+    func stop() {
         cancellationToken.cancel()
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
-        silenceCheckTimer?.cancel()
-        silenceCheckTimer = nil
-        isRecording = false
-        recordingID = nil
 
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    /// Polls the silence detector and auto-submits when the user stops speaking.
-    private func startSilenceCheckTimer() {
-        silenceCheckTimer = Timer.publish(every: 0.1, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                guard let self, self.silenceDetector.hasExceededSilenceThreshold else { return }
-                self.submitRecording()
-            }
+    func sendSubmitSignal(recordingID: UUID) {
+        sendActionSignal(recordingID: recordingID, action: "submit")
     }
+
+    func sendCancelSignal(recordingID: UUID) {
+        sendActionSignal(recordingID: recordingID, action: "cancel")
+    }
+
+    // MARK: Private
 
     /// Sends a submit/cancel signal so the server knows the recording's final status.
     private func sendActionSignal(recordingID: UUID, action: String) {
@@ -226,7 +238,7 @@ final class AudioRecorderManager: ObservableObject {
 
     /// Converts an audio buffer to raw float data and POSTs it to the endpoint.
     /// Runs on the audio render thread — keep it lightweight.
-    private nonisolated static func sendChunk(buffer: AVAudioPCMBuffer, to url: URL, recordingID: UUID) {
+    private static func sendChunk(buffer: AVAudioPCMBuffer, to url: URL, recordingID: UUID) {
         guard let channelData = buffer.floatChannelData else { return }
 
         let frameCount = Int(buffer.frameLength)
