@@ -35,13 +35,24 @@ struct ContentView: View {
                         .multilineTextAlignment(.center)
                 }
 
-                // Recording control
+                // Recording controls
                 if audioRecorder.isRecording {
-                    Button("Cancel Recording", role: .destructive) {
-                        audioRecorder.stopRecording()
+                    HStack(spacing: 8) {
+                        Button("Cancel", role: .destructive) {
+                            audioRecorder.stopRecording()
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+
+                        Button("Submit") {
+                            audioRecorder.submitRecording()
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
+
+                    Text("Auto-submits after 3s of silence")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 } else {
                     Button("Start Recording") {
                         audioRecorder.startRecording()
