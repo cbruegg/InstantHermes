@@ -2,13 +2,40 @@
 
 This file provides guidance for AI agents working on the InstantHermes project.
 
-## Project Overview
+## Product Vision
 
-**InstantHermes** is a SwiftUI application with an Apple Watch companion app.
+**Build Hermes agent watchOS and iOS voice app**
+
+InstantHermes is a voice interface for [Hermes](https://github.com/NousResearch/hermes-agent) — an AI agent that runs on a Raspberry Pi. The app lets you talk to Hermes from your iPhone or Apple Watch.
+
+### Default Mode: Fire and Forget
+- Record voice and send that to Hermes API as **audio file** (no transcription!)
+- Hermes processes the audio and responds
+- User does not wait for a response
+
+### Interactive Mode: Voice Conversation
+- Record voice → send to Hermes → Hermes responds using **TTS** (text-to-speech)
+- Start a **fresh session** for each interaction to ensure fast response
+- Real-time back-and-forth conversation
+
+### Security: Hermes API Access
+- **Do NOT expose full Hermes API remotely**
+- **MVP approach**: No server component — mandate **Tailscale** for the connection
+  - Hermes runs on Raspberry Pi on the local network
+  - iPhone/Watch connects via Tailscale VPN
+  - All communication stays within the Tailscale network
+- Future: Optionally implement a small, very restricted backend to run alongside Hermes on the Raspberry Pi with authentication (maybe some kind of pairing mechanism)
+
+### Status
+- **Does not exist yet** — this is a greenfield project
+- iPhone app first, watchOS companion second
+- Default mode is MVP
+
+## Project Overview
 
 - **iOS App**: `InstantHermes` — Main app for iPhone/iPad
 - **Watch App**: `InstantHermesWatchApp` — Companion app for Apple Watch
-- **Tech Stack**: SwiftUI, SwiftData, WatchConnectivity
+- **Tech Stack**: SwiftUI, SwiftData, WatchConnectivity, AVFoundation (audio recording/playback)
 - **Xcode Version**: 27.0
 - **Deployment Targets**: iOS 27.0, watchOS 10.0
 
@@ -39,7 +66,6 @@ xcodebuild -project InstantHermes.xcodeproj \
   -scheme InstantHermes \
   -destination 'platform=iOS Simulator,name=iPhone 17' \
   -sdk iphonesimulator \
-  CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
   build
 ```
 
@@ -49,7 +75,6 @@ xcodebuild -project InstantHermes.xcodeproj \
   -scheme "InstantHermesWatchApp" \
   -destination 'platform=watchOS Simulator,name=Apple Watch Series 12 (42mm)' \
   -sdk watchsimulator \
-  CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
   build
 ```
 
@@ -81,40 +106,6 @@ The classic **Simulator.app** GUI has been **replaced by the new Device Hub app*
 - `/Applications/Simulator.app` (not found)
 
 **To manage simulators visually, use the Device Hub app** (part of Xcode 27's new device management UI). Alternatively, use `xcrun simctl` commands for headless operation.
-
-### Available watchOS Simulators
-- Apple Watch Series 12 (42mm) — UDID: `3E6AB3E7-D55D-4B56-BDA8-DDD7C8C183D4`
-- Apple Watch Series 12 (46mm)
-- Apple Watch Ultra 4 (49mm)
-- Apple Watch SE 3 (40mm / 44mm)
-
-### Code Signing
-For simulator builds, disable code signing:
-```bash
-CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
-```
-
-## Data Sync Architecture
-
-The iOS app and Watch app sync data via **WatchConnectivity**:
-
-- Each device has its own **SwiftData** container (not shared)
-- When items change on either device, the full list is sent to the other device
-- The watch app requests items from the iPhone when it becomes reachable
-- Sync is "last writer wins" (no conflict resolution)
-
-## Key Build Settings
-
-| Setting | iOS App | Watch App |
-|---------|---------|-----------|
-| Bundle ID | `com.cbruegg.InstantHermes` | `com.cbruegg.InstantHermes.watchkitapp` |
-| Product Type | `com.apple.product-type.application` | `com.apple.product-type.application` |
-| Deployment Target | iOS 27.0 | watchOS 10.0 |
-| Supported Platforms | `iphoneos iphonesimulator` | `watchos watchsimulator` |
-| Device Family | `1,2` | `4` |
-| WKCompanionAppBundleIdentifier | — | `com.cbruegg.InstantHermes` |
-
-> **Note**: The watch app uses `com.apple.product-type.application` (not `.watchapp2`) for Xcode 14+ compatibility. Using `.watchapp2` causes "Multiple commands produce" build errors.
 
 ## Common Issues
 
