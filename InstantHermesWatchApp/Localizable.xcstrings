@@ -1,0 +1,90 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "Cancel" : {
+      "comment" : "Button label to cancel the current recording.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel"
+          }
+        }
+      }
+    },
+    "Submit" : {
+      "comment" : "Button label to submit the current recording.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Submit"
+          }
+        }
+      }
+    },
+    "Start Recording" : {
+      "comment" : "Button label to start a new recording.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start Recording"
+          }
+        }
+      }
+    },
+    "Microphone permission denied" : {
+      "comment" : "Error message shown when the user denies microphone access.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Microphone permission denied"
+          }
+        }
+      }
+    },
+    "Failed to configure audio session: %@" : {
+      "comment" : "Error message shown when the audio session fails to configure. %@ is replaced with the underlying error description.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Failed to configure audio session: %@"
+          }
+        }
+      }
+    },
+    "Failed to start audio engine: %@" : {
+      "comment" : "Error message shown when the audio engine fails to start. %@ is replaced with the underlying error description.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Failed to start audio engine: %@"
+          }
+        }
+      }
+    },
+    "NSMicrophoneUsageDescription" : {
+      "comment" : "The message displayed to the user when the app requests microphone access (Info.plist).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "InstantHermes needs microphone access to record and stream audio."
+          }
+        }
+      }
+    }
+  },
+  "version" : 1
+}

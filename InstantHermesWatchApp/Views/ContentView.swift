@@ -44,10 +44,6 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
-
-                Text("Auto-submits after 3s of silence")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             } else {
                 Button("Start Recording") {
                     viewModel.startRecording()

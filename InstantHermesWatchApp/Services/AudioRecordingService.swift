@@ -18,11 +18,11 @@ enum AudioRecordingError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .permissionDenied:
-            return "Microphone permission denied"
+            return String(localized: "Microphone permission denied")
         case .audioSessionConfigurationFailed(let error):
-            return "Failed to configure audio session: \(error.localizedDescription)"
+            return String(format: String(localized: "Failed to configure audio session: %@"), error.localizedDescription)
         case .engineStartFailed(let error):
-            return "Failed to start audio engine: \(error.localizedDescription)"
+            return String(format: String(localized: "Failed to start audio engine: %@"), error.localizedDescription)
         }
     }
 }
