@@ -1,8 +1,6 @@
 //
 //  AudioRecordingService.swift
-//  InstantHermesWatchApp
-//
-//  Created by Christian Brüggemann on 11.10.26.
+//  Shared between InstantHermes (iOS) and InstantHermesWatchApp
 //
 //  Records microphone audio via AVAudioEngine, converts to 16 kHz mono PCM
 //  via AVAudioConverter (sample rate conversion), batches chunks, and streams
@@ -12,6 +10,8 @@
 //  Note: AAC encoding via AVAudioConverter requires AudioToolbox, which is not
 //  available on watchOS. PCM streaming is the documented fallback (PLAN.md §5):
 //  ~64 KB/s over the tailnet is trivial bandwidth.
+//
+//  Created by Christian Brüggemann on 11.10.26.
 //
 
 import Foundation
@@ -39,7 +39,7 @@ enum AudioRecordingError: LocalizedError {
         case .converterCreationFailed:
             return String(localized: "Failed to create audio converter")
         case .serverNotConfigured:
-            return String(localized: "Server not configured. Open the iPhone app to set up the server.")
+            return String(localized: "Server not configured. Open the app settings to set up the server.")
         case .uploadFailed(let error):
             return String(format: String(localized: "Audio upload failed: %@"), error.localizedDescription)
         }
@@ -176,7 +176,7 @@ final class SilenceDetector: @unchecked Sendable {
 
 /// Batches PCM audio data and flushes it as one chunk upload per ~1 s
 /// (~64 KB of 16 kHz float32 mono). Large chunks keep the serial upload
-/// queue from falling behind: the watch→Pi path (Bluetooth/WiFi hop plus
+/// queue from falling behind: the device→Pi path (Bluetooth/WiFi hop plus
 /// tailnet) has enough per-request RTT that small ~4 KB chunks made the
 /// backlog drain — and "Sending…" block — at submit time.
 /// Runs uploads on a serial queue so sequences stay contiguous.

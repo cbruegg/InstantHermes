@@ -1,6 +1,6 @@
 //
 //  AudioWaveformView.swift
-//  InstantHermesWatchApp
+//  Shared between InstantHermes (iOS) and InstantHermesWatchApp
 //
 //  Created by Christian Brüggemann on 11.10.26.
 //

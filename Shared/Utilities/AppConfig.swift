@@ -1,28 +1,35 @@
 //
 //  AppConfig.swift
-//  InstantHermesWatchApp
+//  Shared between InstantHermes (iOS) and InstantHermesWatchApp
 //
 //  Keychain-backed configuration store for server host and API key.
 //  Uses kSecAttrSynchronizable = false to keep the API key out of iCloud sync.
+//
+//  Created by Christian Brüggemann on 11.10.26.
 //
 
 import Foundation
 import Security
 
-/// Server configuration synced from the iPhone app.
+/// Server configuration: Hermes host + API key + delivery target.
 nonisolated struct ServerConfig: Codable, Equatable, Sendable {
     /// MagicDNS hostname, e.g. "raspi5.mytailnet.ts.net"
     var host: String
     /// Hermes API_SERVER_KEY (bearer token shared with STT backend)
     var apiKey: String
     /// Where the Hermes response should be delivered (e.g. "matrix", "telegram",
-    /// or "" for none). Sent to the STT backend with the submit action; the
-    /// backend delivers the response to this platform's home channel.
+    /// or "" for none). Synced to the watch; the STT backend delivers the
+    /// response to this platform's home channel.
     var deliveryTarget: String
 
     /// STT backend URL (derived: http://<host>:8643)
     var sttBaseURL: URL? {
         URL(string: "http://\(host):8643")
+    }
+
+    /// Hermes API URL (derived: http://<host>:8642)
+    var hermesBaseURL: URL? {
+        URL(string: "http://\(host):8642")
     }
 
     var isValid: Bool {

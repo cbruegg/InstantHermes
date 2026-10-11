@@ -2,135 +2,41 @@
 //  ContentView.swift
 //  InstantHermes
 //
-//  Created by Christian Brüggemann on 11.10.26.
+//  Main view for the iPhone app. A TabView with two tabs:
+//  - Record: the shared recording interface (same as the watch app)
+//  - Settings: server status and configuration
 //
-//  Main view for the iPhone app. Shows server status and a link to settings.
+//  Created by Christian Brüggemann on 11.10.26.
 //
 
 import SwiftUI
-#if canImport(WatchConnectivity)
-import WatchConnectivity
-#endif
 
 struct ContentView: View {
-    @Environment(\.scenePhase) private var scenePhase
-    #if canImport(WatchConnectivity)
-    @EnvironmentObject private var connectivityManager: WatchConnectivityManager
-    #endif
-
-    @State private var showSettings = false
-    @State private var isConfigured = false
-    @State private var serverHost: String = ""
-
-    private let configStore = AppConfigStore.shared
-
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    HStack {
-                        Label("Server", systemImage: "server.rack")
-                        Spacer()
-                        if isConfigured {
-                            Text(serverHost)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("Not configured")
-                                .foregroundStyle(.red)
-                        }
-                    }
-
-                    #if canImport(WatchConnectivity)
-                    HStack {
-                        Label("Apple Watch", systemImage: "applewatch")
-                        Spacer()
-                        if !connectivityManager.isSupported {
-                            Text("Not supported")
-                                .foregroundStyle(.secondary)
-                        } else if connectivityManager.activationError != nil {
-                            Text("Connection error")
-                                .foregroundStyle(.red)
-                        } else if connectivityManager.activationState != .activated {
-                            Text("Connecting…")
-                                .foregroundStyle(.secondary)
-                        } else if !connectivityManager.isPaired {
-                            Text("No paired watch")
-                                .foregroundStyle(.orange)
-                        } else if connectivityManager.isWatchAppInstalled {
-                            if connectivityManager.isReachable {
-                                Text("Connected")
-                                    .foregroundStyle(.green)
-                            } else {
-                                Text("Installed, not reachable")
-                                    .foregroundStyle(.orange)
-                            }
-                        } else {
-                            Text("App not detected")
-                                .foregroundStyle(.red)
-                        }
-                    }
-                    #endif
-                } header: {
-                    Text("Status")
-                } footer: {
-                    #if canImport(WatchConnectivity)
-                    Text(connectivityManager.connectionDetails)
-                    if !connectivityManager.isWatchAppInstalled {
-                        Text("Install the iPhone app with its embedded watch companion, then open the app on your paired Apple Watch. Pull down to refresh.")
-                    } else if !isConfigured {
-                        Text("Tap Settings to configure your Hermes server. Make sure Tailscale is running on this device.")
-                    } else {
-                        Text("Record voice messages on your Apple Watch to send them to Hermes. Keep your iPhone nearby — the watch routes traffic through it. Make sure Tailscale is running on your iPhone.")
-                    }
-                    #else
-                    if !isConfigured {
-                        Text("Tap Settings to configure your Hermes server. Make sure Tailscale is running on this device.")
-                    } else {
-                        Text("Record voice messages on your Apple Watch to send them to Hermes. Make sure Tailscale is running on this device.")
-                    }
-                    #endif
-                }
-
-                Section {
-                    NavigationLink {
-                        SettingsView()
-                    } label: {
-                        Label("Settings", systemImage: "gear")
-                    }
-                }
+        TabView {
+            // Record tab — the primary interface, same as the watch app
+            NavigationStack {
+                RecordingView()
+                    .navigationTitle("Record")
             }
-            .navigationTitle("InstantHermes")
-            .refreshable {
-                refreshStatus()
+            .tabItem {
+                Label("Record", systemImage: "mic.fill")
+            }
+
+            // Settings tab — status overview + configuration
+            NavigationStack {
+                StatusView()
+            }
+            .tabItem {
+                Label("Settings", systemImage: "gear")
             }
         }
-        .onAppear {
-            refreshStatus()
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                refreshStatus()
-            }
-        }
-    }
-
-    private func refreshStatus() {
-        if let config = configStore.load(), config.isValid {
-            isConfigured = true
-            serverHost = config.host
-        } else {
-            isConfigured = false
-            serverHost = ""
-        }
-        #if canImport(WatchConnectivity)
-        connectivityManager.refreshWatchStatus()
-        #endif
     }
 }
 
 #Preview {
     ContentView()
-    #if canImport(WatchConnectivity)
-    .environmentObject(WatchConnectivityManager.shared)
-    #endif
+        #if canImport(WatchConnectivity)
+        .environmentObject(WatchConnectivityManager.shared)
+        #endif
 }

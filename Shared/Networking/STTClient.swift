@@ -1,10 +1,12 @@
 //
 //  STTClient.swift
-//  InstantHermesWatchApp
+//  Shared between InstantHermes (iOS) and InstantHermesWatchApp
 //
 //  HTTP client for the instanthermes-stt backend (:8643).
 //  Handles chunk uploads, submit (fire and forget: the backend transcribes
 //  and forwards to Hermes), and cancel actions.
+//
+//  Created by Christian Brüggemann on 11.10.26.
 //
 
 import Foundation
@@ -22,7 +24,7 @@ enum STTClientError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notConfigured:
-            return "Server not configured. Set up the server in the iPhone app."
+            return "Server not configured. Set up the server in the app settings."
         case .invalidResponse:
             return "Invalid response from STT server"
         case .serverError(let code, let message):

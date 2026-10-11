@@ -67,13 +67,10 @@
         }
       }
     },
-    "Open the iPhone app to set up the server" : {
-
-    },
     "Sending…" : {
 
     },
-    "Server not configured. Open the iPhone app to set up the server." : {
+    "Server not configured. Open the app settings to set up the server." : {
 
     },
     "Start Recording" : {
@@ -99,7 +96,7 @@
           }
         }
       }
-    },
+    }
   },
   "version" : "1.0"
 }

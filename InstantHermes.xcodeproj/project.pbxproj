@@ -74,6 +74,11 @@
 			path = InstantHermesWatchApp;
 			sourceTree = "<group>";
 		};
+		C3CF6001307BC43B00238701 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -105,6 +110,7 @@
 			children = (
 				A1AED423307BC43900238701 /* InstantHermes */,
 				B2BF5001307BC43B00238701 /* InstantHermesWatchApp */,
+				C3CF6001307BC43B00238701 /* Shared */,
 				A1AED433307BC43B00238701 /* InstantHermesTests */,
 				A1AED43D307BC43B00238701 /* InstantHermesUITests */,
 				A1AED422307BC43900238701 /* Products */,
@@ -141,6 +147,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				A1AED423307BC43900238701 /* InstantHermes */,
+				C3CF6001307BC43B00238701 /* Shared */,
 			);
 			name = InstantHermes;
 			productName = InstantHermes;
@@ -201,6 +208,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				B2BF5001307BC43B00238701 /* InstantHermesWatchApp */,
+				C3CF6001307BC43B00238701 /* Shared */,
 			);
 			name = InstantHermesWatchApp;
 			productName = InstantHermesWatchApp;

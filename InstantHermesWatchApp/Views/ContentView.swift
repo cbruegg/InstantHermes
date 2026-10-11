@@ -2,119 +2,18 @@
 //  ContentView.swift
 //  InstantHermesWatchApp
 //
+//  Thin wrapper around the shared RecordingView. The watch app's main
+//  (and only) screen is the recording interface, identical to the iOS
+//  app's Record tab.
+//
 //  Created by Christian Brüggemann on 11.10.26.
 //
 
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = RecordingViewModel()
-    @StateObject private var connectivityManager = WatchConnectivityManager.shared
-
     var body: some View {
-        VStack(spacing: 12) {
-            Spacer()
-
-            // Audio waveform visualization (active during recording)
-            AudioWaveformView(
-                level: viewModel.audioLevel,
-                isActive: viewModel.isRecording
-            )
-
-            Spacer()
-
-            // Status message (submitting)
-            if let status = viewModel.statusMessage {
-                Text(status)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .transition(.opacity)
-            }
-
-            // Error message
-            if let error = viewModel.errorMessage {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-                    .transition(.opacity)
-            }
-
-            // Not configured warning
-            if !viewModel.isConfigured {
-                Text("Open the iPhone app to set up the server")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
-            }
-
-            // Recording controls
-            controls
-        }
-        .padding()
-        .animation(.easeInOut(duration: 0.2), value: viewModel.statusMessage)
-        .animation(.easeInOut(duration: 0.2), value: viewModel.errorMessage)
-        .onAppear {
-            viewModel.checkConfiguration()
-            // Start recording immediately on launch (if configured)
-            viewModel.startRecordingIfIdle()
-        }
-        .onChange(of: connectivityManager.configReceived) { _, received in
-            if received {
-                viewModel.refreshConfiguration()
-                // The config may have arrived after launch — start recording now
-                viewModel.startRecordingIfIdle()
-            }
-        }
-        .onChange(of: connectivityManager.lastReceivedConfig) { _, newConfig in
-            guard newConfig != nil else { return }
-            // Settings were updated on the iPhone while we were recording with
-            // the old config — cancel so the user can start fresh. This goes
-            // through the normal cancel path (idle UI, no error message).
-            viewModel.cancelRecording()
-        }
-    }
-
-    @ViewBuilder
-    private var controls: some View {
-        switch viewModel.state {
-        case .idle:
-            Button("Start Recording") {
-                viewModel.startRecording()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!viewModel.isConfigured)
-
-        case .recording:
-            HStack(spacing: 8) {
-                Button("Cancel", role: .destructive) {
-                    viewModel.cancelRecording()
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-
-                Button("Submit") {
-                    viewModel.submitRecording()
-                }
-                .buttonStyle(.borderedProminent)
-            }
-
-        case .submitting:
-            // Submit POST in flight — Cancel is still available.
-            // Tapping Cancel interrupts the submit task (if the POST hasn't
-            // been sent) and sends a cancel to the backend, which aborts
-            // processing before transcription and before the Hermes POST.
-            HStack(spacing: 8) {
-                Button("Cancel", role: .destructive) {
-                    viewModel.cancelRecording()
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-
-                ProgressView()
-                    .controlSize(.small)
-            }
-        }
+        RecordingView()
     }
 }
 

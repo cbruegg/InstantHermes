@@ -1,6 +1,6 @@
 //
 //  RecordingState.swift
-//  InstantHermesWatchApp
+//  Shared between InstantHermes (iOS) and InstantHermesWatchApp
 //
 //  Created by Christian Brüggemann on 11.10.26.
 //
@@ -19,13 +19,13 @@ import Foundation
 ///
 /// Fire and forget: once the backend accepts the submit (202), it transcribes
 /// the audio and forwards the transcript to Hermes in the background.
-/// The watch never waits for transcription.
+/// The device never waits for transcription.
 ///
 /// Cancel is available in both `recording` and `submitting` states:
 /// - In `recording`: discards spooled chunks on the backend.
 /// - In `submitting`: interrupts the submit task and sends a cancel to the
 ///   backend, which aborts processing (transcription + Hermes submission).
-/// After 202, the watch sends periodic keepalives so the backend can detect
+/// After 202, the device sends periodic keepalives so the backend can detect
 /// client disconnection and abort.
 enum RecordingState: Equatable, Sendable {
     /// No recording in progress.
@@ -34,7 +34,7 @@ enum RecordingState: Equatable, Sendable {
     case recording
     /// Submit POST in flight. Cancel is still available — it interrupts the
     /// submit task (if the POST hasn't been sent) and signals the backend to
-    /// abort processing. Once the backend accepts (202), the watch returns to
-    /// idle and starts sending keepalives.
+    /// abort processing. Once the backend accepts (202), the device returns
+    /// to idle and starts sending keepalives.
     case submitting
 }

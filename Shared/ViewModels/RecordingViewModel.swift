@@ -1,14 +1,14 @@
 //
 //  RecordingViewModel.swift
-//  InstantHermesWatchApp
-//
-//  Created by Christian Brüggemann on 11.10.26.
+//  Shared between InstantHermes (iOS) and InstantHermesWatchApp
 //
 //  ViewModel for the recording screen. Implements the full state machine:
 //  idle → recording → submitting → idle, with Cancel available while recording.
 //  Fire and forget: the STT backend transcribes the audio and forwards the
-//  transcript to Hermes — the watch returns to idle as soon as the submit
+//  transcript to Hermes — the device returns to idle as soon as the submit
 //  is accepted.
+//
+//  Created by Christian Brüggemann on 11.10.26.
 //
 
 import Foundation
@@ -66,7 +66,8 @@ final class RecordingViewModel: ObservableObject {
         isConfigured = configStore.load()?.isValid ?? false
     }
 
-    /// Call this when config might have changed (e.g. synced from iPhone).
+    /// Call this when config might have changed (e.g. synced from iPhone,
+    /// or edited in the settings tab on iOS).
     func refreshConfiguration() {
         checkConfiguration()
     }
@@ -75,6 +76,9 @@ final class RecordingViewModel: ObservableObject {
 
     /// Starts recording and streaming. Requests microphone permission if needed.
     func startRecording() {
+        // Always re-check config — the user may have changed settings
+        // while this view model was alive (e.g. on the iOS Settings tab).
+        refreshConfiguration()
         guard state == .idle else { return }
         guard isConfigured else {
             errorMessage = AudioRecordingError.serverNotConfigured.localizedDescription
@@ -144,7 +148,7 @@ final class RecordingViewModel: ObservableObject {
 
     /// Submits the recording: stops recording and hands the audio to the
     /// backend. Fire and forget — the backend transcribes and forwards the
-    /// transcript to Hermes in the background; the watch returns to idle as
+    /// transcript to Hermes in the background; the device returns to idle as
     /// soon as the backend accepts the audio (202).
     func submitRecording() {
         guard state == .recording else { return }
