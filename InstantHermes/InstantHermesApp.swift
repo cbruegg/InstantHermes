@@ -6,26 +6,12 @@
 //
 
 import SwiftUI
-import SwiftData
 
 @main
 struct InstantHermesApp: App {
     #if canImport(WatchConnectivity)
     @StateObject private var connectivityManager = WatchConnectivityManager.shared
     #endif
-
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
 
     var body: some Scene {
         WindowGroup {
@@ -34,6 +20,5 @@ struct InstantHermesApp: App {
                 .environmentObject(connectivityManager)
                 #endif
         }
-        .modelContainer(sharedModelContainer)
     }
 }

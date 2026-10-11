@@ -9,12 +9,13 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = RecordingViewModel()
+    @StateObject private var connectivityManager = WatchConnectivityManager.shared
 
     var body: some View {
         VStack(spacing: 12) {
             Spacer()
 
-            // Audio waveform visualization
+            // Audio waveform visualization (active during recording)
             AudioWaveformView(
                 level: viewModel.audioLevel,
                 isActive: viewModel.isRecording
@@ -22,39 +23,87 @@ struct ContentView: View {
 
             Spacer()
 
+            // Status message (transcribing / submitting)
+            if let status = viewModel.statusMessage {
+                Text(status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .transition(.opacity)
+            }
+
             // Error message
             if let error = viewModel.errorMessage {
                 Text(error)
                     .font(.caption2)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
+                    .transition(.opacity)
+            }
+
+            // Not configured warning
+            if !viewModel.isConfigured {
+                Text("Open the iPhone app to set up the server")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
             }
 
             // Recording controls
-            if viewModel.isRecording {
-                HStack(spacing: 8) {
-                    Button("Cancel", role: .destructive) {
-                        viewModel.cancelRecording()
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
+            controls
+        }
+        .padding()
+        .animation(.easeInOut(duration: 0.2), value: viewModel.statusMessage)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.errorMessage)
+        .onAppear {
+            viewModel.checkConfiguration()
+            // Start recording immediately on launch (if configured)
+            if viewModel.isConfigured {
+                viewModel.startRecording()
+            }
+        }
+        .onChange(of: connectivityManager.configReceived) { _, received in
+            if received {
+                viewModel.refreshConfiguration()
+            }
+        }
+    }
 
-                    Button("Submit") {
-                        viewModel.submitRecording()
-                    }
-                    .buttonStyle(.borderedProminent)
+    @ViewBuilder
+    private var controls: some View {
+        switch viewModel.state {
+        case .idle:
+            Button("Start Recording") {
+                viewModel.startRecording()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!viewModel.isConfigured)
+
+        case .recording:
+            HStack(spacing: 8) {
+                Button("Cancel", role: .destructive) {
+                    viewModel.cancelRecording()
                 }
-            } else {
-                Button("Start Recording") {
-                    viewModel.startRecording()
+                .buttonStyle(.bordered)
+                .tint(.red)
+
+                Button("Submit") {
+                    viewModel.submitRecording()
                 }
                 .buttonStyle(.borderedProminent)
             }
-        }
-        .padding()
-        .onAppear {
-            // Start recording immediately on launch
-            viewModel.startRecording()
+
+        case .transcribing, .submitting:
+            // Show cancel only during transcribing (submitting is point of no return)
+            if viewModel.state == .transcribing {
+                Button("Cancel", role: .destructive) {
+                    viewModel.cancelRecording()
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
         }
     }
 }

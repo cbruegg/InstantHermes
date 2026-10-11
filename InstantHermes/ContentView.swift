@@ -4,70 +4,90 @@
 //
 //  Created by Christian Brüggemann on 11.10.26.
 //
+//  Main view for the iPhone app. Shows server status and a link to settings.
+//
 
 import SwiftUI
-import SwiftData
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
     #if canImport(WatchConnectivity)
     @EnvironmentObject private var connectivityManager: WatchConnectivityManager
     #endif
-    @Query private var items: [Item]
+
+    @State private var showSettings = false
+    @State private var isConfigured = false
+    @State private var serverHost: String = ""
+
+    private let configStore = AppConfigStore.shared
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(items) { item in
+                Section {
+                    HStack {
+                        Label("Server", systemImage: "server.rack")
+                        Spacer()
+                        if isConfigured {
+                            Text(serverHost)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Not configured")
+                                .foregroundStyle(.red)
+                        }
+                    }
+
+                    #if canImport(WatchConnectivity)
+                    HStack {
+                        Label("Apple Watch", systemImage: "applewatch")
+                        Spacer()
+                        if connectivityManager.isReachable {
+                            Text("Connected")
+                                .foregroundStyle(.green)
+                        } else {
+                            Text("Not reachable")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    #endif
+                } header: {
+                    Text("Status")
+                } footer: {
+                    if !isConfigured {
+                        Text("Tap Settings to configure your Hermes server. Make sure Tailscale is running on this device.")
+                    } else {
+                        Text("Record voice messages on your Apple Watch to send them to Hermes. Make sure Tailscale is running on this device.")
+                    }
+                }
+
+                Section {
                     NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
+                        SettingsView()
                     } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
-                }
-                .onDelete(perform: deleteItems)
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
+                        Label("Settings", systemImage: "gear")
                     }
                 }
             }
+            .navigationTitle("InstantHermes")
         }
-        #if canImport(WatchConnectivity)
         .onAppear {
-            connectivityManager.setModelContext(modelContext)
-        }
-        .onChange(of: items) { oldValue, newValue in
-            connectivityManager.sendItems(newValue)
-        }
-        #endif
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
+            refreshStatus()
         }
     }
 
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
-            }
+    private func refreshStatus() {
+        if let config = configStore.load(), config.isValid {
+            isConfigured = true
+            serverHost = config.host
+        } else {
+            isConfigured = false
+            serverHost = ""
         }
     }
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
-        #if canImport(WatchConnectivity)
-        .environmentObject(WatchConnectivityManager.shared)
-        #endif
+    #if canImport(WatchConnectivity)
+    .environmentObject(WatchConnectivityManager.shared)
+    #endif
 }

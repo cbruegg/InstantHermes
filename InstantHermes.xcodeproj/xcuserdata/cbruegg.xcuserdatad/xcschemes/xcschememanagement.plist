@@ -9,6 +9,29 @@
 			<key>orderHint</key>
 			<integer>0</integer>
 		</dict>
+		<key>InstantHermesWatchApp.xcscheme_^#shared#^_</key>
+		<dict>
+			<key>orderHint</key>
+			<integer>1</integer>
+		</dict>
+	</dict>
+	<key>SuppressBuildableAutocreation</key>
+	<dict>
+		<key>A1AED420307BC43900238701</key>
+		<dict>
+			<key>primary</key>
+			<true/>
+		</dict>
+		<key>A1AED42F307BC43B00238701</key>
+		<dict>
+			<key>primary</key>
+			<true/>
+		</dict>
+		<key>A1AED439307BC43B00238701</key>
+		<dict>
+			<key>primary</key>
+			<true/>
+		</dict>
 	</dict>
 </dict>
 </plist>

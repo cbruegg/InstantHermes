@@ -4,9 +4,19 @@
 //
 //  Created by Christian Brüggemann on 11.10.26.
 //
+//  Records microphone audio via AVAudioEngine, converts to 16 kHz mono PCM
+//  via AVAudioConverter (sample rate conversion), batches chunks, and streams
+//  them to the STT backend via STTClient. The backend wraps PCM in WAV for
+//  Voxtral transcription.
+//
+//  Note: AAC encoding via AVAudioConverter requires AudioToolbox, which is not
+//  available on watchOS. PCM streaming is the documented fallback (PLAN.md §5):
+//  ~32 KB/s over the tailnet is trivial bandwidth.
+//
 
 import Foundation
 import AVFoundation
+import Combine
 
 // MARK: - Errors
 
@@ -14,6 +24,9 @@ enum AudioRecordingError: LocalizedError {
     case permissionDenied
     case audioSessionConfigurationFailed(Error)
     case engineStartFailed(Error)
+    case converterCreationFailed
+    case serverNotConfigured
+    case uploadFailed(Error)
 
     var errorDescription: String? {
         switch self {
@@ -23,6 +36,12 @@ enum AudioRecordingError: LocalizedError {
             return String(format: String(localized: "Failed to configure audio session: %@"), error.localizedDescription)
         case .engineStartFailed(let error):
             return String(format: String(localized: "Failed to start audio engine: %@"), error.localizedDescription)
+        case .converterCreationFailed:
+            return String(localized: "Failed to create audio converter")
+        case .serverNotConfigured:
+            return String(localized: "Server not configured. Open the iPhone app to set up the server.")
+        case .uploadFailed(let error):
+            return String(format: String(localized: "Audio upload failed: %@"), error.localizedDescription)
         }
     }
 }
@@ -42,17 +61,19 @@ protocol AudioRecordingService: AnyObject {
     func requestPermission() async -> Bool
 
     /// Starts recording and streaming. Returns the recording session ID.
-    /// Throws on audio session or engine failure.
-    func start() throws -> UUID
+    /// Throws on audio session, engine, or configuration failure.
+    func start() async throws -> UUID
 
-    /// Stops recording immediately. Does not send any submit/cancel signal.
-    func stop()
+    /// Stops recording immediately. Flushes any pending batched chunks.
+    /// Does not send any submit/cancel signal.
+    func stop() async
 
-    /// Sends a submit signal so the server knows the recording is complete.
-    func sendSubmitSignal(recordingID: UUID)
+    /// Submits the recording for transcription.
+    /// Returns the transcribed text. Throws on STT failure.
+    func submit(recordingID: UUID) async throws -> String
 
-    /// Sends a cancel signal so the server knows the recording was discarded.
-    func sendCancelSignal(recordingID: UUID)
+    /// Cancels the recording — tells the backend to discard spooled chunks.
+    func cancel(recordingID: UUID) async
 }
 
 // MARK: - Internal Helpers
@@ -147,16 +168,145 @@ final class SilenceDetector: @unchecked Sendable {
     }
 }
 
+/// Batches PCM audio data and flushes it as chunk uploads
+/// every ~0.5 seconds or ~4 KB, whichever comes first.
+/// Runs uploads on a serial queue so sequences stay contiguous.
+actor ChunkBatcher {
+    private var buffer = Data()
+    private var lastFlushTime = Date()
+    private let flushInterval: TimeInterval = 0.5
+    private let flushSizeThreshold: Int = 4096
+
+    private let recordingID: UUID
+    private let sttClient: STTClient
+    private var sequence: Int = 0
+
+    /// Serial queue for uploads — ensures chunks are sent in order.
+    private var serialQueue: [SerialUpload] = []
+    private var isProcessing = false
+    private var uploadError: Error?
+
+    private struct SerialUpload {
+        let sequence: Int
+        let data: Data
+    }
+
+    init(recordingID: UUID, sttClient: STTClient) {
+        self.recordingID = recordingID
+        self.sttClient = sttClient
+    }
+
+    /// Adds PCM audio data to the batch buffer.
+    /// Flushes (enqueues an upload) when thresholds are met.
+    func add(_ data: Data) {
+        buffer.append(data)
+        let now = Date()
+        if buffer.count >= flushSizeThreshold || now.timeIntervalSince(lastFlushTime) >= flushInterval {
+            flush(now: now)
+        }
+    }
+
+    /// Flushes any remaining buffered data. Call when recording stops.
+    func flushAll() {
+        guard !buffer.isEmpty else { return }
+        flush(now: Date())
+    }
+
+    /// Waits for all in-flight uploads to complete.
+    func waitForUploads() async {
+        while isProcessing || !serialQueue.isEmpty {
+            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+        }
+    }
+
+    /// Returns any upload error that occurred, then clears it.
+    func getAndClearError() -> Error? {
+        let err = uploadError
+        uploadError = nil
+        return err
+    }
+
+    private func flush(now: Date) {
+        guard !buffer.isEmpty else { return }
+        let chunk = buffer
+        buffer = Data()
+        lastFlushTime = now
+
+        let seq = sequence
+        sequence += 1
+
+        serialQueue.append(SerialUpload(sequence: seq, data: chunk))
+        processQueueIfNeeded()
+    }
+
+    private func processQueueIfNeeded() {
+        guard !isProcessing, !serialQueue.isEmpty else { return }
+        isProcessing = true
+
+        let upload = serialQueue.removeFirst()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.uploadWithRetry(upload)
+            await self.markComplete()
+        }
+    }
+
+    private func uploadWithRetry(_ upload: SerialUpload) async {
+        let maxRetries = 3
+        var lastError: Error?
+
+        for attempt in 0..<maxRetries {
+            if attempt > 0 {
+                // Exponential backoff: 0.5s, 1s, 2s
+                let delay = pow(2.0, Double(attempt - 1)) * 0.5
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+
+            do {
+                try await sttClient.uploadChunk(
+                    recordingID: recordingID,
+                    sequence: upload.sequence,
+                    data: upload.data
+                )
+                return // success
+            } catch {
+                lastError = error
+            }
+        }
+
+        // All retries failed — sequences would have a gap; the backend would 409 anyway.
+        if let error = lastError {
+            uploadError = error
+        }
+    }
+
+    private func markComplete() {
+        isProcessing = false
+        processQueueIfNeeded()
+    }
+}
+
 // MARK: - Implementation
 
-/// Records microphone audio via `AVAudioEngine` and streams chunks to an HTTP endpoint.
-final class AVAudioRecordingService: AudioRecordingService {
+/// Records microphone audio via `AVAudioEngine`, converts to 16 kHz mono PCM,
+/// and streams batched chunks to the STT backend.
+final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable {
     private let audioEngine = AVAudioEngine()
     private let cancellationToken = CancellationToken()
     private let silenceDetector = SilenceDetector()
 
-    // Dummy endpoint — replace with a real server when ready.
-    private let endpointURL = URL(string: "http://localhost:8080/audio")!
+    private let configStore: AppConfigStore
+    private var sttClient: STTClient?
+    private var batcher: ChunkBatcher?
+    private var converter: AVAudioConverter?
+
+    /// Target PCM format: 16 kHz, mono, float32 (for Voxtral compatibility).
+    private static let targetSampleRate: Double = 16000
+    private static let targetChannelCount: AVAudioChannelCount = 1
+
+    init(configStore: AppConfigStore = .shared) {
+        self.configStore = configStore
+    }
 
     // MARK: AudioRecordingService
 
@@ -172,7 +322,15 @@ final class AVAudioRecordingService: AudioRecordingService {
         }
     }
 
-    func start() throws -> UUID {
+    func start() async throws -> UUID {
+        // Load config and create STT client
+        guard let config = configStore.load(), config.isValid else {
+            throw AudioRecordingError.serverNotConfigured
+        }
+        guard let client = STTClient(config: config) else {
+            throw AudioRecordingError.serverNotConfigured
+        }
+
         cancellationToken.reset()
         silenceDetector.reset()
         let recordingID = UUID()
@@ -187,17 +345,41 @@ final class AVAudioRecordingService: AudioRecordingService {
         }
 
         let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
+        let inputFormat = inputNode.outputFormat(forBus: 0)
 
-        // Capture only Sendable values so the tap callback can run on the audio thread.
+        // Create target PCM format: 16 kHz, mono, float32
+        guard let targetFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Self.targetSampleRate,
+            channels: Self.targetChannelCount,
+            interleaved: false
+        ) else {
+            throw AudioRecordingError.converterCreationFailed
+        }
+
+        // Create converter: hardware PCM → 16 kHz mono PCM
+        guard let pcmConverter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+            throw AudioRecordingError.converterCreationFailed
+        }
+        self.converter = pcmConverter
+
+        // Create the chunk batcher
+        let newBatcher = ChunkBatcher(recordingID: recordingID, sttClient: client)
+        self.batcher = newBatcher
+        self.sttClient = client
+
+        // Capture Sendable values for the tap callback
         let token = cancellationToken
         let detector = silenceDetector
-        let url = endpointURL
+        let conv = pcmConverter
+        let batch = newBatcher
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, _ in
             guard !token.isCancelled else { return }
             detector.processBuffer(buffer)
-            Self.sendChunk(buffer: buffer, to: url, recordingID: recordingID)
+
+            // Convert PCM to 16 kHz mono and enqueue
+            Self.convertAndEnqueue(buffer: buffer, converter: conv, batcher: batch)
         }
 
         do {
@@ -209,51 +391,82 @@ final class AVAudioRecordingService: AudioRecordingService {
         return recordingID
     }
 
-    func stop() {
+    func stop() async {
         cancellationToken.cancel()
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
 
+        // Flush remaining batched chunks
+        await batcher?.flushAll()
+
+        // Wait for in-flight uploads to settle so submit/cancel sees a consistent state
+        await batcher?.waitForUploads()
+
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    func sendSubmitSignal(recordingID: UUID) {
-        sendActionSignal(recordingID: recordingID, action: "submit")
+    func submit(recordingID: UUID) async throws -> String {
+        // Check for upload errors first
+        if let error = await batcher?.getAndClearError() {
+            throw AudioRecordingError.uploadFailed(error)
+        }
+
+        guard let client = sttClient else {
+            throw AudioRecordingError.serverNotConfigured
+        }
+
+        return try await client.submit(recordingID: recordingID)
     }
 
-    func sendCancelSignal(recordingID: UUID) {
-        sendActionSignal(recordingID: recordingID, action: "cancel")
+    func cancel(recordingID: UUID) async {
+        // Flush any remaining chunks first (so backend has complete state),
+        // then send cancel.
+        await batcher?.flushAll()
+        await batcher?.waitForUploads()
+
+        try? await sttClient?.cancel(recordingID: recordingID)
     }
 
     // MARK: Private
 
-    /// Sends a submit/cancel signal so the server knows the recording's final status.
-    private func sendActionSignal(recordingID: UUID, action: String) {
-        var request = URLRequest(url: endpointURL)
-        request.httpMethod = "POST"
-        request.setValue(action, forHTTPHeaderField: "X-Action")
-        request.setValue(recordingID.uuidString, forHTTPHeaderField: "X-Recording-ID")
-        URLSession.shared.dataTask(with: request).resume()
-    }
+    /// Converts a PCM buffer to 16 kHz mono float32 and enqueues the raw bytes.
+    /// Runs on the audio render thread — must be fast and non-blocking.
+    private static func convertAndEnqueue(
+        buffer: AVAudioPCMBuffer,
+        converter: AVAudioConverter,
+        batcher: ChunkBatcher
+    ) {
+        // Calculate output frame count based on sample rate ratio
+        let inputSampleRate = buffer.format.sampleRate
+        let outputSampleRate = Self.targetSampleRate
+        let ratio = outputSampleRate / inputSampleRate
+        let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024
 
-    /// Converts an audio buffer to raw float data and POSTs it to the endpoint.
-    /// Runs on the audio render thread — keep it lightweight.
-    private static func sendChunk(buffer: AVAudioPCMBuffer, to url: URL, recordingID: UUID) {
-        guard let channelData = buffer.floatChannelData else { return }
+        guard let outputBuffer = AVAudioPCMBuffer(
+            pcmFormat: converter.outputFormat,
+            frameCapacity: outputFrameCount
+        ) else { return }
 
-        let frameCount = Int(buffer.frameLength)
-        let byteCount = frameCount * MemoryLayout<Float>.stride
+        var error: NSError?
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        let status = converter.convert(to: outputBuffer, error: &error, withInputFrom: inputBlock)
+        guard status != .error, error == nil else { return }
+
+        // Extract float32 samples as Data
+        let frameLength = Int(outputBuffer.frameLength)
+        guard frameLength > 0,
+              let channelData = outputBuffer.floatChannelData else { return }
+
+        let byteCount = frameLength * MemoryLayout<Float>.stride
         let data = Data(bytes: channelData[0], count: byteCount)
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.setValue("float32", forHTTPHeaderField: "X-Audio-Format")
-        request.setValue("\(buffer.format.sampleRate)", forHTTPHeaderField: "X-Sample-Rate")
-        request.setValue(recordingID.uuidString, forHTTPHeaderField: "X-Recording-ID")
-        request.httpBody = data
-
-        // Fire-and-forget; errors are expected with a dummy endpoint.
-        URLSession.shared.dataTask(with: request).resume()
+        // Enqueue on the batcher (actor-isolated, thread-safe)
+        Task {
+            await batcher.add(data)
+        }
     }
 }
