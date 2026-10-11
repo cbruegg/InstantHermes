@@ -1,6 +1,6 @@
 # InstantHermes
 
-A voice interface for [Hermes](https://github.com/NousResearch/hermes-agent) — an AI agent that runs on a Raspberry Pi. Talk to Hermes from your iPhone or Apple Watch.
+A voice interface for [Hermes](https://github.com/NousResearch/hermes-agent). Talk to Hermes from your iPhone or Apple Watch.
 
 ## How it works
 
@@ -10,16 +10,16 @@ iPhone / Apple Watch
   ▼
 Tailscale (WireGuard-encrypted VPN)
   ▼
-instanthermes-stt backend  (:8643, on the Raspberry Pi)
+instanthermes-stt backend  (:8643, running on the same server as Hermes)
   │  Reassembles audio → wraps in WAV → transcribes via Mistral Voxtral
   ▼
-Hermes API server  (:8642, on the Raspberry Pi)
+Hermes API server  (:8642)
   │  POST /v1/runs — fire and forget
   ▼
 Hermes response delivered to your chosen platform (Matrix, Telegram, etc.)
 ```
 
-**Fire and forget:** You record, hit submit (or just stop talking), and the app returns to idle immediately. Transcription and the Hermes submission happen in the background on the Pi. If you set a delivery target, the Hermes response is delivered to that platform's home channel.
+**Fire and forget:** You record, hit submit (or just stop talking), and the app returns to idle immediately. Transcription and the Hermes submission happen in the background on the server. If you set a delivery target, the Hermes response is delivered to that platform's home channel.
 
 ## Features
 
@@ -32,7 +32,7 @@ Hermes response delivered to your chosen platform (Matrix, Telegram, etc.)
 
 ## Prerequisites
 
-### On the Raspberry Pi (server)
+### On the server
 
 | Requirement | Details |
 |-------------|---------|
@@ -59,7 +59,7 @@ Hermes response delivered to your chosen platform (Matrix, Telegram, etc.)
 
 ## Hermes configuration
 
-The backend reads its configuration from `~/.hermes/.env` on the Raspberry Pi. Make sure these variables are set:
+The backend reads its configuration from `~/.hermes/.env` on the server. Make sure these variables are set:
 
 ```bash
 # ~/.hermes/.env
@@ -71,9 +71,9 @@ API_SERVER_ENABLED=true
 # Generate with: openssl rand -hex 32
 API_SERVER_KEY=<your-secret-key-here>
 
-# The Raspberry Pi's Tailscale IP (from `tailscale ip -4`).
+# The server's Tailscale IP (from `tailscale ip -4`).
 # Hardcode it — Tailscale IPs are stable.
-API_SERVER_HOST=<tailscale-ip-of-raspi>
+API_SERVER_HOST=<tailscale-ip-of-server>
 
 # Hermes API server port (default: 8642)
 # API_SERVER_PORT=8642
@@ -89,7 +89,7 @@ hermes gateway
 # or under systemd for persistence
 ```
 
-## Backend setup (Raspberry Pi)
+## Backend setup
 
 The backend is a single-file, stdlib-only Python service (`backend/server.py`) that runs under systemd. It:
 
@@ -102,7 +102,7 @@ The backend is a single-file, stdlib-only Python service (`backend/server.py`) t
 ### Installation (user systemd service — recommended, no sudo)
 
 ```bash
-# On the Raspberry Pi:
+# On the server:
 
 # 1. Copy the backend files
 mkdir -p ~/InstantHermes-backend
@@ -148,11 +148,11 @@ From any device on the tailnet (e.g., your iPhone with Tailscale, or a Mac):
 
 ```bash
 # Health check (no auth required)
-curl http://raspi5.<your-tailnet>.ts.net:8643/health
+curl http://<yourserver>.<your-tailnet>.ts.net:8643/health
 # → {"ok": true, "mistral_configured": true}
 
 # Hermes health check
-curl http://raspi5.<your-tailnet>.ts.net:8642/health
+curl http://<yourserver>.<your-tailnet>.ts.net:8642/health
 ```
 
 See [`backend/README.md`](backend/README.md) for the full API contract and curl-based testing examples.
@@ -185,8 +185,8 @@ xcodebuild -project InstantHermes.xcodeproj \
 2. Go to the **Settings** tab
 3. Tap **Configure**
 4. Enter:
-   - **Server host**: Your Pi's MagicDNS hostname (e.g., `raspi5.mytailnet.ts.net`)
-     - Use the MagicDNS hostname, **not** an IP address — iOS ATS (App Transport Security) blocks HTTP to IPs. The app has ATS exceptions for `*.ts.net` and `*.cbruegg.com`.
+   - **Server host**: Your server's MagicDNS hostname (e.g., `yourserver.mytailnet.ts.net`)
+     - Use the MagicDNS hostname, **not** an IP address — iOS ATS (App Transport Security) blocks HTTP to IPs. The app has an ATS exception for `*.ts.net`.
    - **API Key**: The `API_SERVER_KEY` from `~/.hermes/.env`
    - **Reply in**: Where Hermes should deliver its response (e.g., `matrix`, `telegram`, `discord`, `slack`, `whatsapp`, `signal`), or **Nowhere** for fire-and-forget
 5. Tap **Test Connection** to verify both Hermes (:8642) and the STT backend (:8643) are reachable
@@ -250,7 +250,7 @@ The host or API key is missing. Go to the iPhone app's Settings tab and configur
 
 ### Connection test fails: "ATS blocked"
 
-You entered an IP address instead of a MagicDNS hostname. Use `raspi5.<your-tailnet>.ts.net` (or `raspi5.cbruegg.com`), not `100.x.y.z`. iOS ATS blocks plain HTTP to IP addresses; the ATS exception only works for domain names.
+You entered an IP address instead of a MagicDNS hostname. Use `<yourserver>.<your-tailnet>.ts.net`, not `100.x.y.z`. iOS ATS blocks plain HTTP to IP addresses; the ATS exception only works for domain names.
 
 ### Connection test fails: "Cannot connect"
 
@@ -271,7 +271,7 @@ The watch needs the iPhone nearby (Bluetooth or same WiFi network). Make sure:
 
 ### Transcription fails / no response from Hermes
 
-Check the backend logs on the Pi:
+Check the backend logs on the server:
 
 ```bash
 journalctl --user -u instanthermes-stt -f
@@ -321,7 +321,7 @@ Bandwidth is ~64 KB/s over the tailnet — trivial.
 - **Transport**: All traffic flows through Tailscale (WireGuard end-to-end encryption). Tailscale's coordination servers only do key exchange — they never see packet contents.
 - **Authentication**: Both the app and the backend use `Authorization: Bearer <API_SERVER_KEY>` — the same key as Hermes.
 - **Key storage**: The API key is stored in the iOS/watch Keychain with `kSecAttrSynchronizable = false` (never synced to iCloud).
-- **Mistral key**: Never leaves the Raspberry Pi — only the backend reads it from `~/.hermes/.env`.
+- **Mistral key**: Never leaves the server — only the backend reads it from `~/.hermes/.env`.
 - **Cancellation invariant**: The backend's `POST /v1/runs` (the only request that turns audio into a Hermes message) fires only if the recording was submitted, not cancelled, and the client is still alive (keepalive freshness checked).
 
 ### Project structure
@@ -346,7 +346,7 @@ InstantHermes/
 │   └── Views/
 │       ├── RecordingView.swift               # Main recording UI (platform-adaptive)
 │       └── AudioWaveformView.swift           # Audio level visualization
-├── backend/                    # STT backend (runs on the Raspberry Pi)
+├── backend/                    # STT backend (runs on the server)
 │   ├── server.py               #   Stdlib-only Python service
 │   ├── instanthermes-stt.service  #   systemd unit
 │   └── README.md               #   Backend API docs + testing
