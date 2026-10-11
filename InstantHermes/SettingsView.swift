@@ -34,6 +34,13 @@ struct SettingsView: View {
                     .autocapitalization(.none)
                     .autocorrectionDisabled()
 
+                // Show validation warning inline
+                if let warning = validateHost() {
+                    Label(warning, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
                 SecureField("API Key", text: $apiKey)
                     .textContentType(.password)
                     .autocapitalization(.none)
@@ -41,7 +48,7 @@ struct SettingsView: View {
             } header: {
                 Text("Server")
             } footer: {
-                Text("Enter the MagicDNS hostname of your Hermes server (e.g. raspi5.mytailnet.ts.net) and the API_SERVER_KEY from ~/.hermes/.env.")
+                Text("Enter the MagicDNS hostname (raspi5.YOURTAILNET.ts.net) and the API_SERVER_KEY from ~/.hermes/.env. Use the MagicDNS hostname, NOT the IP address — ATS blocks HTTP to IPs.")
             }
 
             Section {
@@ -124,8 +131,14 @@ struct SettingsView: View {
     }
 
     private func saveConfig() {
+        // Normalize host (strip protocol and trailing slash)
+        var normalizedHost = host.trimmingCharacters(in: .whitespaces)
+        if normalizedHost.hasPrefix("http://") { normalizedHost = String(normalizedHost.dropFirst(7)) }
+        if normalizedHost.hasPrefix("https://") { normalizedHost = String(normalizedHost.dropFirst(8)) }
+        if normalizedHost.hasSuffix("/") { normalizedHost = String(normalizedHost.dropLast()) }
+
         let config = ServerConfig(
-            host: host.trimmingCharacters(in: .whitespaces),
+            host: normalizedHost,
             apiKey: apiKey.trimmingCharacters(in: .whitespaces),
             deliveryTarget: deliveryTarget.trimmingCharacters(in: .whitespaces)
         )
@@ -141,13 +154,56 @@ struct SettingsView: View {
         }
     }
 
+    /// Validates the host field. Returns an error message if invalid.
+    private func validateHost() -> String? {
+        let trimmed = host.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil } // Empty is OK (just not saved)
+
+        // Strip protocol if user accidentally included it
+        var h = trimmed
+        if h.hasPrefix("http://") { h = String(h.dropFirst(7)) }
+        if h.hasPrefix("https://") { h = String(h.dropFirst(8)) }
+        // Strip trailing slash
+        if h.hasSuffix("/") { h = String(h.dropLast()) }
+
+        // Check if it looks like an IP address (ATS exceptions don't work for IPs)
+        let ipPattern = #"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"#
+        if h.range(of: ipPattern, options: .regularExpression) != nil {
+            return "IP addresses don't work — use the MagicDNS hostname (e.g. raspi5.mytailnet.ts.net). ATS blocks HTTP to IPs."
+        }
+
+        // Check if it contains a dot (looks like a domain)
+        if !h.contains(".") {
+            return "Enter the full MagicDNS hostname (e.g. raspi5.mytailnet.ts.net), not just 'raspi5'."
+        }
+
+        // Warn if it doesn't end in .ts.net (ATS exception is scoped to ts.net)
+        if !h.hasSuffix(".ts.net") {
+            return "ATS exception is only configured for *.ts.net domains. Other domains will be blocked. Use the Tailscale MagicDNS hostname."
+        }
+
+        return nil
+    }
+
     private func testConnection() async {
         isTestingConnection = true
         connectionTestResult = nil
         defer { isTestingConnection = false }
 
+        // Validate host first
+        if let warning = validateHost() {
+            connectionTestResult = "⚠ \(warning)"
+            return
+        }
+
+        // Normalize host (strip protocol and trailing slash)
+        var normalizedHost = host.trimmingCharacters(in: .whitespaces)
+        if normalizedHost.hasPrefix("http://") { normalizedHost = String(normalizedHost.dropFirst(7)) }
+        if normalizedHost.hasPrefix("https://") { normalizedHost = String(normalizedHost.dropFirst(8)) }
+        if normalizedHost.hasSuffix("/") { normalizedHost = String(normalizedHost.dropLast()) }
+
         let config = ServerConfig(
-            host: host.trimmingCharacters(in: .whitespaces),
+            host: normalizedHost,
             apiKey: apiKey.trimmingCharacters(in: .whitespaces),
             deliveryTarget: deliveryTarget.trimmingCharacters(in: .whitespaces)
         )
@@ -182,8 +238,19 @@ struct SettingsView: View {
             } else {
                 connectionTestResult = "✗ Hermes returned \((response as? HTTPURLResponse)?.statusCode ?? -1)"
             }
+        } catch let error as NSError {
+            // Check for ATS error specifically
+            if error.domain == NSURLErrorDomain && error.code == NSURLErrorAppTransportSecurityRequiresSecureConnection {
+                connectionTestResult = "✗ ATS blocked: Use the MagicDNS hostname (raspi5.xxx.ts.net), not an IP address. ATS exceptions only work for domain names."
+            } else if error.domain == NSURLErrorDomain && error.code == NSURLErrorCannotConnectToHost {
+                connectionTestResult = "✗ Cannot connect — is Tailscale running on this iPhone? Is the host correct?"
+            } else if error.domain == NSURLErrorDomain && error.code == NSURLErrorNotConnectedToInternet {
+                connectionTestResult = "✗ No internet — is Tailscale running on this iPhone?"
+            } else {
+                connectionTestResult = "✗ \(error.localizedDescription)"
+            }
         } catch {
-            connectionTestResult = "✗ Connection failed: \(error.localizedDescription)"
+            connectionTestResult = "✗ \(error.localizedDescription)"
         }
     }
 }

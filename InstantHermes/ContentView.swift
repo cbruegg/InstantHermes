@@ -40,23 +40,38 @@ struct ContentView: View {
                     HStack {
                         Label("Apple Watch", systemImage: "applewatch")
                         Spacer()
-                        if connectivityManager.isReachable {
-                            Text("Connected")
-                                .foregroundStyle(.green)
+                        if connectivityManager.isWatchAppInstalled {
+                            if connectivityManager.isReachable {
+                                Text("Connected")
+                                    .foregroundStyle(.green)
+                            } else {
+                                Text("Installed, not reachable")
+                                    .foregroundStyle(.orange)
+                            }
                         } else {
-                            Text("Not reachable")
-                                .foregroundStyle(.secondary)
+                            Text("Not installed")
+                                .foregroundStyle(.red)
                         }
                     }
                     #endif
                 } header: {
                     Text("Status")
                 } footer: {
+                    #if canImport(WatchConnectivity)
+                    if !connectivityManager.isWatchAppInstalled {
+                        Text("The watch app should auto-install from the Watch app → App Store → 'Apps' section, or open the Watch app on your iPhone and look for the install prompt.")
+                    } else if !isConfigured {
+                        Text("Tap Settings to configure your Hermes server. Make sure Tailscale is running on this device.")
+                    } else {
+                        Text("Record voice messages on your Apple Watch to send them to Hermes. Keep your iPhone nearby — the watch routes traffic through it. Make sure Tailscale is running on your iPhone.")
+                    }
+                    #else
                     if !isConfigured {
                         Text("Tap Settings to configure your Hermes server. Make sure Tailscale is running on this device.")
                     } else {
                         Text("Record voice messages on your Apple Watch to send them to Hermes. Make sure Tailscale is running on this device.")
                     }
+                    #endif
                 }
 
                 Section {
