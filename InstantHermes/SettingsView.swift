@@ -48,7 +48,7 @@ struct SettingsView: View {
             } header: {
                 Text("Server")
             } footer: {
-                Text("Enter the MagicDNS hostname (raspi5.YOURTAILNET.ts.net) and the API_SERVER_KEY from ~/.hermes/.env. Use the MagicDNS hostname, NOT the IP address — ATS blocks HTTP to IPs.")
+                Text("Enter the hostname (e.g. raspi5.YOURTAILNET.ts.net or raspi5.cbruegg.com) and the API_SERVER_KEY from ~/.hermes/.env. Use a domain name, NOT an IP address — ATS blocks HTTP to IPs.")
             }
 
             Section {
@@ -177,9 +177,10 @@ struct SettingsView: View {
             return "Enter the full MagicDNS hostname (e.g. raspi5.mytailnet.ts.net), not just 'raspi5'."
         }
 
-        // Warn if it doesn't end in .ts.net (ATS exception is scoped to ts.net)
-        if !h.hasSuffix(".ts.net") {
-            return "ATS exception is only configured for *.ts.net domains. Other domains will be blocked. Use the Tailscale MagicDNS hostname."
+        // Warn if it doesn't match an ATS-exception domain
+        let allowedSuffixes = [".ts.net", ".cbruegg.com"]
+        if !allowedSuffixes.contains(where: { h.hasSuffix($0) }) {
+            return "ATS exception is only configured for *.ts.net and *.cbruegg.com domains. Other domains will be blocked."
         }
 
         return nil
@@ -241,7 +242,7 @@ struct SettingsView: View {
         } catch let error as NSError {
             // Check for ATS error specifically
             if error.domain == NSURLErrorDomain && error.code == NSURLErrorAppTransportSecurityRequiresSecureConnection {
-                connectionTestResult = "✗ ATS blocked: Use the MagicDNS hostname (raspi5.xxx.ts.net), not an IP address. ATS exceptions only work for domain names."
+                connectionTestResult = "✗ ATS blocked: Use a domain name (raspi5.xxx.ts.net or raspi5.cbruegg.com), not an IP address. ATS exceptions only work for domain names."
             } else if error.domain == NSURLErrorDomain && error.code == NSURLErrorCannotConnectToHost {
                 connectionTestResult = "✗ Cannot connect — is Tailscale running on this iPhone? Is the host correct?"
             } else if error.domain == NSURLErrorDomain && error.code == NSURLErrorNotConnectedToInternet {
