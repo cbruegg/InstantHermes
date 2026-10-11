@@ -119,4 +119,4 @@ The classic **Simulator.app** GUI has been **replaced by the new Device Hub app*
 
 ### Watch app not embedded in iOS app
 **Cause**: Missing "Embed Watch Content" copy files build phase.
-**Fix**: Add a `PBXCopyFilesBuildPhase` with `dstPath = Watch`, `dstSubfolderSpec = 13` to the iOS target.
+**Fix**: Add a `PBXCopyFilesBuildPhase` with `dstPath = "$(CONTENTS_FOLDER_PATH)/Watch"`, `dstSubfolderSpec = 16` to the iOS target. Verify that the built companion is at `InstantHermes.app/Watch/InstantHermesWatchApp.app`; destination specifier 13 is `PlugIns`, not `Watch`.

@@ -19,6 +19,22 @@ final class WatchConnectivityManager: NSObject, ObservableObject {
 
     @Published var isWatchAppInstalled = false
     @Published var isReachable = false
+    @Published private(set) var isPaired = false
+    @Published private(set) var activationState: WCSessionActivationState = .notActivated
+    @Published private(set) var activationError: String?
+
+    var isSupported: Bool { session != nil }
+
+    var connectionDetails: String {
+        guard isSupported else { return "WatchConnectivity is not supported on this device." }
+        if let activationError {
+            return "WatchConnectivity activation failed: \(activationError)"
+        }
+        guard activationState == .activated else {
+            return "WatchConnectivity is not active yet. Installation status is unknown."
+        }
+        return "Session: activated · Paired: \(isPaired ? "yes" : "no") · App detected: \(isWatchAppInstalled ? "yes" : "no") · Reachable: \(isReachable ? "yes" : "no")"
+    }
 
     private let session: WCSession? = WCSession.isSupported() ? WCSession.default : nil
     private let configStore: AppConfigStore
@@ -28,6 +44,25 @@ final class WatchConnectivityManager: NSObject, ObservableObject {
         super.init()
         session?.delegate = self
         session?.activate()
+    }
+
+    // MARK: - Status Refresh
+
+    /// Re-reads the session state when the app returns to the foreground or is refreshed.
+    func refreshWatchStatus() {
+        guard let session else { return }
+        activationState = session.activationState
+        // Installation and pairing properties are only meaningful after activation.
+        guard activationState == .activated else {
+            isPaired = false
+            isWatchAppInstalled = false
+            isReachable = false
+            return
+        }
+        activationError = nil
+        isPaired = session.isPaired
+        isWatchAppInstalled = session.isWatchAppInstalled
+        isReachable = session.isReachable
     }
 
     // MARK: - Config Sync
@@ -72,8 +107,8 @@ nonisolated extension WatchConnectivityManager: WCSessionDelegate {
         error: Error?
     ) {
         Task { @MainActor in
-            self.isWatchAppInstalled = session.isWatchAppInstalled
-            self.isReachable = session.isReachable
+            self.refreshWatchStatus()
+            self.activationError = error?.localizedDescription
             // Sync config when session activates
             if activationState == .activated {
                 self.syncConfigToWatch()
@@ -82,7 +117,9 @@ nonisolated extension WatchConnectivityManager: WCSessionDelegate {
     }
 
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {
-        // Required on iOS, not available on watchOS
+        Task { @MainActor in
+            self.refreshWatchStatus()
+        }
     }
 
     nonisolated func sessionDidDeactivate(_ session: WCSession) {
@@ -92,7 +129,7 @@ nonisolated extension WatchConnectivityManager: WCSessionDelegate {
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
         Task { @MainActor in
-            self.isReachable = session.isReachable
+            self.refreshWatchStatus()
             if session.isReachable {
                 self.syncConfigToWatch()
             }
@@ -101,7 +138,7 @@ nonisolated extension WatchConnectivityManager: WCSessionDelegate {
 
     nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
         Task { @MainActor in
-            self.isWatchAppInstalled = session.isWatchAppInstalled
+            self.refreshWatchStatus()
         }
     }
 

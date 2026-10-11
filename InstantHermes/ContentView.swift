@@ -8,8 +8,12 @@
 //
 
 import SwiftUI
+#if canImport(WatchConnectivity)
+import WatchConnectivity
+#endif
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     #if canImport(WatchConnectivity)
     @EnvironmentObject private var connectivityManager: WatchConnectivityManager
     #endif
@@ -40,7 +44,19 @@ struct ContentView: View {
                     HStack {
                         Label("Apple Watch", systemImage: "applewatch")
                         Spacer()
-                        if connectivityManager.isWatchAppInstalled {
+                        if !connectivityManager.isSupported {
+                            Text("Not supported")
+                                .foregroundStyle(.secondary)
+                        } else if connectivityManager.activationError != nil {
+                            Text("Connection error")
+                                .foregroundStyle(.red)
+                        } else if connectivityManager.activationState != .activated {
+                            Text("Connecting…")
+                                .foregroundStyle(.secondary)
+                        } else if !connectivityManager.isPaired {
+                            Text("No paired watch")
+                                .foregroundStyle(.orange)
+                        } else if connectivityManager.isWatchAppInstalled {
                             if connectivityManager.isReachable {
                                 Text("Connected")
                                     .foregroundStyle(.green)
@@ -49,7 +65,7 @@ struct ContentView: View {
                                     .foregroundStyle(.orange)
                             }
                         } else {
-                            Text("Not installed")
+                            Text("App not detected")
                                 .foregroundStyle(.red)
                         }
                     }
@@ -58,8 +74,9 @@ struct ContentView: View {
                     Text("Status")
                 } footer: {
                     #if canImport(WatchConnectivity)
+                    Text(connectivityManager.connectionDetails)
                     if !connectivityManager.isWatchAppInstalled {
-                        Text("The watch app should auto-install from the Watch app → App Store → 'Apps' section, or open the Watch app on your iPhone and look for the install prompt.")
+                        Text("Install the iPhone app with its embedded watch companion, then open the app on your paired Apple Watch. Pull down to refresh.")
                     } else if !isConfigured {
                         Text("Tap Settings to configure your Hermes server. Make sure Tailscale is running on this device.")
                     } else {
@@ -83,9 +100,17 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("InstantHermes")
+            .refreshable {
+                refreshStatus()
+            }
         }
         .onAppear {
             refreshStatus()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                refreshStatus()
+            }
         }
     }
 
@@ -97,6 +122,9 @@ struct ContentView: View {
             isConfigured = false
             serverHost = ""
         }
+        #if canImport(WatchConnectivity)
+        connectivityManager.refreshWatchStatus()
+        #endif
     }
 }
 
