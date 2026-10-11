@@ -12,14 +12,50 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var items: [Item]
     @StateObject private var connectivityManager = WatchConnectivityManager.shared
+    @StateObject private var audioRecorder = AudioRecorderManager()
 
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(items) { item in
-                    Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
+            VStack(spacing: 8) {
+                // Recording status
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(audioRecorder.isRecording ? Color.red : Color.gray)
+                        .frame(width: 10, height: 10)
+                    Text(audioRecorder.isRecording ? "Recording" : "Not recording")
+                        .font(.caption)
+                        .foregroundStyle(audioRecorder.isRecording ? .red : .secondary)
                 }
-                .onDelete(perform: deleteItems)
+
+                // Error message
+                if let error = audioRecorder.errorMessage {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                }
+
+                // Recording control
+                if audioRecorder.isRecording {
+                    Button("Cancel Recording", role: .destructive) {
+                        audioRecorder.stopRecording()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                } else {
+                    Button("Start Recording") {
+                        audioRecorder.startRecording()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                // Items list
+                List {
+                    ForEach(items) { item in
+                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
+                    }
+                    .onDelete(perform: deleteItems)
+                }
             }
             .navigationTitle("InstantHermes")
             .toolbar {
@@ -33,6 +69,8 @@ struct ContentView: View {
         .onAppear {
             connectivityManager.setModelContext(modelContext)
             connectivityManager.requestItems()
+            // Start recording immediately on launch
+            audioRecorder.startRecording()
         }
         .onChange(of: items) { oldValue, newValue in
             connectivityManager.sendItems(newValue)
