@@ -10,6 +10,9 @@ import SwiftData
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    #if canImport(WatchConnectivity)
+    @EnvironmentObject private var connectivityManager: WatchConnectivityManager
+    #endif
     @Query private var items: [Item]
 
     var body: some View {
@@ -40,6 +43,14 @@ struct ContentView: View {
                 }
             }
         }
+        #if canImport(WatchConnectivity)
+        .onAppear {
+            connectivityManager.setModelContext(modelContext)
+        }
+        .onChange(of: items) { oldValue, newValue in
+            connectivityManager.sendItems(newValue)
+        }
+        #endif
     }
 
     private func addItem() {
@@ -79,4 +90,7 @@ fileprivate struct NavigationViewWrapper<Content: View>: View {
 #Preview {
     ContentView()
         .modelContainer(for: Item.self, inMemory: true)
+        #if canImport(WatchConnectivity)
+        .environmentObject(WatchConnectivityManager.shared)
+        #endif
 }

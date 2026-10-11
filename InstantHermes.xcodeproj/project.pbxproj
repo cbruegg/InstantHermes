@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		B2BF5009307BC43B00238701 /* InstantHermesWatchApp.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = B2BF5000307BC43B00238701 /* InstantHermesWatchApp.app */; settings = {"PLATFORMS" = "iphoneos iphonesimulator"; }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		A1AED431307BC43B00238701 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -21,12 +25,34 @@
 			remoteGlobalIDString = A1AED420307BC43900238701;
 			remoteInfo = InstantHermes;
 		};
+		B2BF5006307BC43B00238701 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1AED419307BC43900238701 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B2BF5002307BC43B00238701;
+			remoteInfo = InstantHermesWatchApp;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B2BF5008307BC43B00238701 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Watch;
+			dstSubfolderSpec = 13;
+			files = (
+				B2BF5009307BC43B00238701 /* InstantHermesWatchApp.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		A1AED421307BC43900238701 /* InstantHermes.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = InstantHermes.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1AED430307BC43B00238701 /* InstantHermesTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = InstantHermesTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1AED43A307BC43B00238701 /* InstantHermesUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = InstantHermesUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B2BF5000307BC43B00238701 /* InstantHermesWatchApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "InstantHermesWatchApp.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -43,6 +69,11 @@
 		A1AED43D307BC43B00238701 /* InstantHermesUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = InstantHermesUITests;
+			sourceTree = "<group>";
+		};
+		B2BF5001307BC43B00238701 /* InstantHermesWatchApp */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = InstantHermesWatchApp;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -63,6 +94,11 @@
 			files = (
 			);
 		};
+		B2BF5004307BC43B00238701 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -70,6 +106,7 @@
 			isa = PBXGroup;
 			children = (
 				A1AED423307BC43900238701 /* InstantHermes */,
+				B2BF5001307BC43B00238701 /* InstantHermesWatchApp */,
 				A1AED433307BC43B00238701 /* InstantHermesTests */,
 				A1AED43D307BC43B00238701 /* InstantHermesUITests */,
 				A1AED422307BC43900238701 /* Products */,
@@ -80,6 +117,7 @@
 			isa = PBXGroup;
 			children = (
 				A1AED421307BC43900238701 /* InstantHermes.app */,
+				B2BF5000307BC43B00238701 /* InstantHermesWatchApp.app */,
 				A1AED430307BC43B00238701 /* InstantHermesTests.xctest */,
 				A1AED43A307BC43B00238701 /* InstantHermesUITests.xctest */,
 			);
@@ -96,8 +134,12 @@
 				A1AED41D307BC43900238701 /* Sources */,
 				A1AED41E307BC43900238701 /* Frameworks */,
 				A1AED41F307BC43900238701 /* Resources */,
+				B2BF5008307BC43B00238701 /* Embed Watch Content */,
 			);
 			buildRules = (
+			);
+			dependencies = (
+				B2BF5007307BC43B00238701 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A1AED423307BC43900238701 /* InstantHermes */,
@@ -149,6 +191,24 @@
 			productReference = A1AED43A307BC43B00238701 /* InstantHermesUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		B2BF5002307BC43B00238701 /* InstantHermesWatchApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B2BF500C307BC43B00238701 /* Build configuration list for PBXNativeTarget "InstantHermesWatchApp" */;
+			buildPhases = (
+				B2BF5003307BC43B00238701 /* Sources */,
+				B2BF5004307BC43B00238701 /* Frameworks */,
+				B2BF5005307BC43B00238701 /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				B2BF5001307BC43B00238701 /* InstantHermesWatchApp */,
+			);
+			name = InstantHermesWatchApp;
+			productName = InstantHermesWatchApp;
+			productReference = B2BF5000307BC43B00238701 /* InstantHermesWatchApp.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -170,6 +230,9 @@
 						CreatedOnToolsVersion = 27.0;
 						TestTargetID = A1AED420307BC43900238701;
 					};
+					B2BF5002307BC43B00238701 = {
+						CreatedOnToolsVersion = 27.0;
+					};
 				};
 			};
 			buildConfigurationList = A1AED41C307BC43900238701 /* Build configuration list for PBXProject "InstantHermes" */;
@@ -187,6 +250,7 @@
 			projectRoot = "";
 			targets = (
 				A1AED420307BC43900238701 /* InstantHermes */,
+				B2BF5002307BC43B00238701 /* InstantHermesWatchApp */,
 				A1AED42F307BC43B00238701 /* InstantHermesTests */,
 				A1AED439307BC43B00238701 /* InstantHermesUITests */,
 			);
@@ -209,6 +273,11 @@
 			files = (
 			);
 		};
+		B2BF5005307BC43B00238701 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -227,6 +296,11 @@
 			files = (
 			);
 		};
+		B2BF5003307BC43B00238701 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -239,6 +313,11 @@
 			isa = PBXTargetDependency;
 			target = A1AED420307BC43900238701 /* InstantHermes */;
 			targetProxy = A1AED43B307BC43B00238701 /* PBXContainerItemProxy */;
+		};
+		B2BF5007307BC43B00238701 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B2BF5002307BC43B00238701 /* InstantHermesWatchApp */;
+			targetProxy = B2BF5006307BC43B00238701 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -549,6 +628,68 @@
 			};
 			name = Release;
 		};
+		B2BF500A307BC43B00238701 /* Debug configuration for PBXNativeTarget "InstantHermesWatchApp" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 5F2AW2L57Z;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_WKApplication = YES;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.cbruegg.InstantHermes;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cbruegg.InstantHermes.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				VALIDATE_PRODUCT = NO;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+				WKCompanionAppBundleIdentifier = com.cbruegg.InstantHermes;
+			};
+			name = Debug;
+		};
+		B2BF500B307BC43B00238701 /* Release configuration for PBXNativeTarget "InstantHermesWatchApp" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 5F2AW2L57Z;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_WKApplication = YES;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.cbruegg.InstantHermes;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cbruegg.InstantHermes.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				VALIDATE_PRODUCT = NO;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+				WKCompanionAppBundleIdentifier = com.cbruegg.InstantHermes;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -581,6 +722,14 @@
 			buildConfigurations = (
 				A1AED449307BC43B00238701 /* Debug configuration for PBXNativeTarget "InstantHermesUITests" */,
 				A1AED44A307BC43B00238701 /* Release configuration for PBXNativeTarget "InstantHermesUITests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		B2BF500C307BC43B00238701 /* Build configuration list for PBXNativeTarget "InstantHermesWatchApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B2BF500A307BC43B00238701 /* Debug configuration for PBXNativeTarget "InstantHermesWatchApp" */,
+				B2BF500B307BC43B00238701 /* Release configuration for PBXNativeTarget "InstantHermesWatchApp" */,
 			);
 			defaultConfigurationName = Release;
 		};

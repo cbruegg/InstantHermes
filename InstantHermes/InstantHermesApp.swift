@@ -10,6 +10,10 @@ import SwiftData
 
 @main
 struct InstantHermesApp: App {
+    #if canImport(WatchConnectivity)
+    @StateObject private var connectivityManager = WatchConnectivityManager.shared
+    #endif
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Item.self,
@@ -26,6 +30,9 @@ struct InstantHermesApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                #if canImport(WatchConnectivity)
+                .environmentObject(connectivityManager)
+                #endif
         }
         .modelContainer(sharedModelContainer)
     }
