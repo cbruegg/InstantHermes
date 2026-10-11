@@ -335,57 +335,71 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
         silenceDetector.reset()
         let recordingID = UUID()
 
-        // Configure the audio session for recording.
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playAndRecord, mode: .default)
-            try session.setActive(true)
-        } catch {
-            throw AudioRecordingError.audioSessionConfigurationFailed(error)
-        }
+        // Configure the audio session on a background queue — setActive can block
+        // the calling thread, and we must not block the main actor (watchdog timeout).
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: AudioRecordingError.engineStartFailed(NSError(domain: "AVAudioRecordingService", code: -1)))
+                    return
+                }
 
-        let inputNode = audioEngine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+                let session = AVAudioSession.sharedInstance()
+                do {
+                    try session.setCategory(.playAndRecord, mode: .default)
+                    try session.setActive(true)
+                } catch {
+                    continuation.resume(throwing: AudioRecordingError.audioSessionConfigurationFailed(error))
+                    return
+                }
 
-        // Create target PCM format: 16 kHz, mono, float32
-        guard let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Self.targetSampleRate,
-            channels: Self.targetChannelCount,
-            interleaved: false
-        ) else {
-            throw AudioRecordingError.converterCreationFailed
-        }
+                let inputNode = self.audioEngine.inputNode
+                let inputFormat = inputNode.outputFormat(forBus: 0)
 
-        // Create converter: hardware PCM → 16 kHz mono PCM
-        guard let pcmConverter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw AudioRecordingError.converterCreationFailed
-        }
-        self.converter = pcmConverter
+                // Create target PCM format: 16 kHz, mono, float32
+                guard let targetFormat = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: Self.targetSampleRate,
+                    channels: Self.targetChannelCount,
+                    interleaved: false
+                ) else {
+                    continuation.resume(throwing: AudioRecordingError.converterCreationFailed)
+                    return
+                }
 
-        // Create the chunk batcher
-        let newBatcher = ChunkBatcher(recordingID: recordingID, sttClient: client)
-        self.batcher = newBatcher
-        self.sttClient = client
+                // Create converter: hardware PCM → 16 kHz mono PCM
+                guard let pcmConverter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+                    continuation.resume(throwing: AudioRecordingError.converterCreationFailed)
+                    return
+                }
+                self.converter = pcmConverter
 
-        // Capture Sendable values for the tap callback
-        let token = cancellationToken
-        let detector = silenceDetector
-        let conv = pcmConverter
-        let batch = newBatcher
+                // Create the chunk batcher
+                let newBatcher = ChunkBatcher(recordingID: recordingID, sttClient: client)
+                self.batcher = newBatcher
+                self.sttClient = client
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, _ in
-            guard !token.isCancelled else { return }
-            detector.processBuffer(buffer)
+                // Capture Sendable values for the tap callback
+                let token = self.cancellationToken
+                let detector = self.silenceDetector
+                let conv = pcmConverter
+                let batch = newBatcher
 
-            // Convert PCM to 16 kHz mono and enqueue
-            Self.convertAndEnqueue(buffer: buffer, converter: conv, batcher: batch)
-        }
+                inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, _ in
+                    guard !token.isCancelled else { return }
+                    detector.processBuffer(buffer)
 
-        do {
-            try audioEngine.start()
-        } catch {
-            throw AudioRecordingError.engineStartFailed(error)
+                    // Convert PCM to 16 kHz mono and enqueue
+                    Self.convertAndEnqueue(buffer: buffer, converter: conv, batcher: batch)
+                }
+
+                do {
+                    try self.audioEngine.start()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: AudioRecordingError.engineStartFailed(error))
+                }
+            }
         }
 
         return recordingID
@@ -393,8 +407,15 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
 
     func stop() async {
         cancellationToken.cancel()
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
+
+        // Stop audio engine on a background queue — stop() can block.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                self?.audioEngine.stop()
+                self?.audioEngine.inputNode.removeTap(onBus: 0)
+                continuation.resume()
+            }
+        }
 
         // Flush remaining batched chunks
         await batcher?.flushAll()
@@ -402,7 +423,13 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
         // Wait for in-flight uploads to settle so submit/cancel sees a consistent state
         await batcher?.waitForUploads()
 
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        // Deactivate audio session on background queue — setActive can block.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                continuation.resume()
+            }
+        }
     }
 
     func submit(recordingID: UUID) async throws -> String {
