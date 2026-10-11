@@ -64,7 +64,7 @@ struct SettingsView: View {
             } header: {
                 Text("Response Delivery")
             } footer: {
-                Text("Where should Hermes deliver its response? Hermes will use the send_message tool to post its reply to this platform's home channel. Leave as \"Nowhere\" for fire-and-forget mode (Hermes processes but doesn't reply anywhere).")
+                Text("Where should Hermes deliver its response? The InstantHermes backend will post the reply to this platform's home channel. Leave as \"Nowhere\" for fire-and-forget mode (Hermes processes but doesn't reply anywhere).")
             }
 
             Section {

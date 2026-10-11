@@ -38,7 +38,7 @@
 		B2BF5008307BC43B00238701 /* Embed Watch Content */ = {
 			isa = PBXCopyFilesBuildPhase;
 			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
-			dstSubfolderSpec = 16;
+			dstSubfolder = Product;
 			files = (
 				B2BF5009307BC43B00238701 /* InstantHermesWatchApp.app in Embed Watch Content */,
 			);

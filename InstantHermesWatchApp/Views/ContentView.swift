@@ -23,7 +23,7 @@ struct ContentView: View {
 
             Spacer()
 
-            // Status message (transcribing / submitting)
+            // Status message (submitting)
             if let status = viewModel.statusMessage {
                 Text(status)
                     .font(.caption2)
@@ -57,13 +57,13 @@ struct ContentView: View {
         .onAppear {
             viewModel.checkConfiguration()
             // Start recording immediately on launch (if configured)
-            if viewModel.isConfigured {
-                viewModel.startRecording()
-            }
+            viewModel.startRecordingIfIdle()
         }
         .onChange(of: connectivityManager.configReceived) { _, received in
             if received {
                 viewModel.refreshConfiguration()
+                // The config may have arrived after launch — start recording now
+                viewModel.startRecordingIfIdle()
             }
         }
     }
@@ -92,18 +92,10 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
             }
 
-        case .transcribing, .submitting:
-            // Show cancel only during transcribing (submitting is point of no return)
-            if viewModel.state == .transcribing {
-                Button("Cancel", role: .destructive) {
-                    viewModel.cancelRecording()
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-            } else {
-                ProgressView()
-                    .controlSize(.small)
-            }
+        case .submitting:
+            // Fire and forget: the submit POST is quick; no cancel once sent
+            ProgressView()
+                .controlSize(.small)
         }
     }
 }

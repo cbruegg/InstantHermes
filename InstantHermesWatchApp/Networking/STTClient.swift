@@ -3,7 +3,8 @@
 //  InstantHermesWatchApp
 //
 //  HTTP client for the instanthermes-stt backend (:8643).
-//  Handles chunk uploads, submit (finalize + transcribe), and cancel actions.
+//  Handles chunk uploads, submit (fire and forget: the backend transcribes
+//  and forwards to Hermes), and cancel actions.
 //
 
 import Foundation
@@ -38,10 +39,6 @@ enum STTClientError: LocalizedError {
 
 // MARK: - Response types
 
-struct SubmitResponse: Decodable {
-    let text: String
-}
-
 struct ErrorResponse: Decodable {
     let error: String
     let missing: [Int]?
@@ -65,7 +62,7 @@ final class STTClient: Sendable {
         self.apiKey = config.apiKey
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 10 // chunks: 10s
-        config.timeoutIntervalForResource = 70 // submit: 60s + margin
+        config.timeoutIntervalForResource = 30 // generous ceiling; submit returns as soon as the backend accepts (202)
         self.session = URLSession(configuration: config)
     }
 
@@ -98,15 +95,26 @@ final class STTClient: Sendable {
 
     // MARK: Actions
 
-    /// Submits a recording for transcription. Blocks until Voxtral completes.
-    /// - Returns: The transcribed text.
-    func submit(recordingID: UUID) async throws -> String {
+    /// Submits a recording to the backend. Fire and forget: returns as soon
+    /// as the backend accepts the audio (202). The backend then transcribes
+    /// it (Voxtral), forwards the transcript to Hermes, and — if a delivery
+    /// target is set — delivers the response to that platform's home channel.
+    /// - Parameters:
+    ///   - recordingID: The recording session UUID (the backend uses it as the
+    ///     Hermes idempotency key).
+    ///   - deliveryTarget: Where the backend should deliver the Hermes response
+    ///     (e.g. "matrix"), or nil/empty for no delivery.
+    func submit(recordingID: UUID, deliveryTarget: String? = nil) async throws {
         var request = URLRequest(url: baseURL.appendingPathComponent("audio"))
         request.httpMethod = "POST"
-        request.timeoutInterval = 60
+        request.timeoutInterval = 15
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue(recordingID.uuidString, forHTTPHeaderField: "X-Recording-ID")
         request.setValue("submit", forHTTPHeaderField: "X-Action")
+        if let target = deliveryTarget, !target.isEmpty {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(["delivery_target": target])
+        }
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -114,9 +122,8 @@ final class STTClient: Sendable {
         }
 
         switch httpResponse.statusCode {
-        case 200:
-            let result = try JSONDecoder().decode(SubmitResponse.self, from: data)
-            return result.text
+        case 202:
+            return // accepted — the backend processes the recording in the background
         case 409:
             let err = (try? JSONDecoder().decode(ErrorResponse.self, from: data))
                 ?? ErrorResponse(error: "audio_incomplete", missing: nil, message: nil)

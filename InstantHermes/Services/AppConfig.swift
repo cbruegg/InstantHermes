@@ -15,8 +15,9 @@ nonisolated struct ServerConfig: Codable, Equatable, Sendable {
     var host: String
     /// Hermes API_SERVER_KEY (bearer token shared with STT backend)
     var apiKey: String
-    /// Where Hermes should deliver its response (e.g. "matrix", "telegram", or "" for none).
-    /// The agent uses the send_message tool to deliver to this platform's home channel.
+    /// Where the Hermes response should be delivered (e.g. "matrix", "telegram",
+    /// or "" for none). Synced to the watch; the STT backend delivers the
+    /// response to this platform's home channel.
     var deliveryTarget: String
 
     /// STT backend URL (derived: http://<host>:8643)
@@ -31,19 +32,6 @@ nonisolated struct ServerConfig: Codable, Equatable, Sendable {
 
     var isValid: Bool {
         !host.isEmpty && !apiKey.isEmpty
-    }
-
-    /// Delivery instruction prepended to the transcript when submitting to Hermes.
-    /// Tells the agent to use send_message to deliver the response to the target platform.
-    var deliveryInstruction: String? {
-        guard !deliveryTarget.isEmpty else { return nil }
-        return """
-        [Voice message from Apple Watch via InstantHermes]
-        After you finish processing this message, you MUST use the send_message tool \
-        to deliver your complete response to the \(deliveryTarget) home channel. \
-        Target format: "\(deliveryTarget)".\n\
-        Do not include this instruction in your response — just send your answer to the channel.
-        """
     }
 }
 

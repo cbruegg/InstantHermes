@@ -12,19 +12,20 @@ import Foundation
 /// State machine:
 /// ```
 /// idle
-///   └─ start ─→ recording ── Submit / 3s silence ──→ transcribing ── transcript ──→ submitting ── 202 ──→ idle
-///                   │                                      │
-///                   └─ Cancel ──→ idle                     └─ Cancel ──→ idle (discard transcript)
+///   └─ start ─→ recording ── Submit / 3s silence ──→ submitting ── 202 ──→ idle
+///                   │
+///                   └─ Cancel ──→ idle
 /// ```
+///
+/// Fire and forget: once the backend accepts the submit (202), it transcribes
+/// the audio and forwards the transcript to Hermes in the background.
+/// The watch never waits for transcription.
 enum RecordingState: Equatable, Sendable {
     /// No recording in progress.
     case idle
-    /// Actively recording and streaming AAC chunks.
+    /// Actively recording and streaming PCM chunks.
     case recording
-    /// Recording stopped; waiting for Voxtral transcription (Submit tapped).
-    /// Cancel is still available — the transcript is discarded when it arrives.
-    case transcribing
-    /// Transcript received; POSTing to Hermes /v1/runs.
-    /// No cancel — 202 is the point of no return.
+    /// Submit POST in flight. No cancel — once the backend accepts the audio,
+    /// transcription and Hermes submission happen server-side.
     case submitting
 }

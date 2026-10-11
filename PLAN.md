@@ -1,17 +1,17 @@
 # PLAN.md — Watch → STT Backend (Voxtral) → Hermes over Tailscale
 
-Status: **implemented** (2026-10-11).
+Status: **implemented** (2026-10-11). **Revised later the same day: fire-and-forget** — the backend now transcribes *and* forwards to Hermes itself; the watch never waits for transcription (see §2, §3.1, §5.1, §8.1).
 
-This is the revised plan for replacing the dummy `localhost:8080` audio endpoint with the real pipeline: the Apple Watch streams recorded audio to a tiny STT backend on the Raspberry Pi, which transcribes via Mistral Voxtral; the transcript is then submitted to the Hermes API server's message endpoint. Cancellation is end-to-end: cancelling means the transcript is never submitted to Hermes.
+This is the revised plan for replacing the dummy `localhost:8080` audio endpoint with the real pipeline: the Apple Watch streams recorded audio to a tiny STT backend on the Raspberry Pi, which transcribes via Mistral Voxtral and submits the transcript to the Hermes API server's message endpoint itself. Cancellation is end-to-end: cancelling means the recording is discarded before the backend accepts it.
 
 ## 0. Locked-in decisions
 
 | # | Decision | Consequence |
 |---|----------|-------------|
-| 1 | Streaming to the STT endpoint is fine | Audio leaves the watch during recording. The cancellation gate is **only** the message-endpoint POST (`/v1/runs`) — never triggered on Cancel. |
+| 1 | Streaming to the STT endpoint is fine | Audio leaves the watch during recording. The cancellation gate is **only** the backend's message-endpoint POST (`/v1/runs`) — never triggered on Cancel. |
 | 2 | No `tailscale serve` | Plain HTTP over the tailnet to the MagicDNS hostname; app needs a scoped ATS exception. (Tailscale cannot read the data either way — see §1.) |
 | 3 | No PR branch; tiny systemd backend using **Mistral Voxtral**, key from **Hermes config** | New `instanthermes-stt` service on the raspi (port 8643). Reads `MISTRAL_API_KEY` from `~/.hermes/.env`. |
-| 4 | Watch-direct | Watch holds the Hermes `API_SERVER_KEY` (synced from iPhone), talks to both `:8643` (STT) and `:8642` (Hermes) directly. |
+| 4 | Watch → backend only | Watch holds the `API_SERVER_KEY` (synced from iPhone) and talks **only** to `:8643` (STT backend); the backend talks to Hermes `:8642`. |
 | 5 | **PCM float32** (revised from AAC) | AAC encoding via `AVAudioConverter` requires `AudioToolbox`, which is **not available on watchOS**. Fallback per §5: stream 16 kHz mono float32 PCM (~32 KB/s — trivial bandwidth). Backend wraps PCM in WAV for Voxtral. |
 
 ## 1. Can Tailscale read the data?
@@ -28,17 +28,17 @@ We are dropping `serve` per preference. Everything below is plain HTTP inside th
 ```text
 Apple Watch
   AVAudioEngine tap (waveform + silence detection, unchanged)
-    → AVAudioConverter (PCM → AAC-LC, 16 kHz, mono, ~32 kbps)
-    → ADTS frame wrap (self-delimiting frames)
-    → batch ~0.5–1 s → chunk POSTs (retry on failure)
+    → AVAudioConverter (PCM → 16 kHz mono float32)
+    → batch ~0.5 s → chunk POSTs (retry on failure)
         |
         |  chunk uploads + submit/cancel actions
         v
 instanthermes-stt  (systemd, raspi, :8643)
-  reassembles ADTS → Mistral Voxtral
+  reassembles PCM → wraps in WAV → Mistral Voxtral
   (MISTRAL_API_KEY from ~/.hermes/.env)
         |
-        |  transcript text — returned only after Submit
+        |  submit → 202 immediately (fire and forget);
+        |  transcription + Hermes submission run in a background thread
         v
 Hermes API server  (hermes gateway, raspi, :8642)
   POST /v1/runs {"input": "<transcript>"} → 202, fire-and-forget
@@ -47,7 +47,7 @@ Both raspi services bind the Tailscale IP only and require the
 same bearer key (API_SERVER_KEY).
 ```
 
-**The cancellation invariant:** the only request that turns audio into "a complete message to Hermes" is `POST /v1/runs` with the transcript. It is sent **only** after Submit (manual tap or 3 s-silence auto-submit) **and** after the transcript came back. Cancel at any earlier point simply means that request never happens.
+**The cancellation invariant:** the only request that turns audio into "a complete message to Hermes" is the backend's `POST /v1/runs` with the transcript. It fires **only** after the watch submits (manual tap or 3 s-silence auto-submit) **and** the backend accepted the audio (202). Cancel at any earlier point simply discards the spooled audio — that request never happens.
 
 ## 3. The STT backend service (`instanthermes-stt`)
 
@@ -71,9 +71,13 @@ POST /audio                       — chunk upload
 POST /audio                       — action (X-Action header present → not a chunk)
   X-Recording-ID: <uuid>
   X-Action: submit | cancel
-  → submit: 200 {"text": "<transcript>"}                        (after Voxtral completes)
+  → submit: 202 {"status": "accepted"}                          (immediately — fire and forget;
+            optional JSON body {"delivery_target": "matrix"}    the backend transcribes (Voxtral),
+            → the Hermes response is delivered to that         POSTs /v1/runs in a background
+            platform's home channel via `hermes send`          thread, and delivers the response)
+            404 {"error": "recording_not_found"}
             409 {"error": "audio_incomplete", "missing": [..]}  (sequence gap)
-            503 {"error": "stt_unavailable", ...}               (no key / Voxtral failed)
+            503 {"error": "stt_unavailable", ...}               (no Mistral key — fast fail)
   → cancel: 200 {"ok": true}                                    (discard buffered chunks)
 
 GET /health → 200 {"ok": true, "mistral_configured": true|false}
@@ -82,7 +86,8 @@ GET /health → 200 {"ok": true, "mistral_configured": true|false}
 ### 3.2 Behavior
 
 - **Spool:** in-memory `{recording_id: {seq: bytes}}` plus last-activity timestamp; 25 MB cap per recording.
-- **Finalize (submit):** verify sequences are contiguous `0..N`, concatenate into a complete, valid ADTS `.aac` stream, call Voxtral. Always clean up the spooled entry after responding (success or failure).
+- **Finalize (submit):** verify sequences are contiguous `0..N`, then respond `202` immediately and hand the concatenated audio to a background thread that wraps it (PCM→WAV), calls Voxtral, and POSTs the transcript to Hermes `/v1/runs`. The spooled entry is removed when the submit is accepted; the recording ID doubles as the Hermes `Idempotency-Key`, so retries never duplicate a run.
+- **Hermes forwarding:** `POST http://$API_SERVER_HOST:$API_SERVER_PORT/v1/runs` (default port `8642`; host from `~/.hermes/.env`, falling back to the machine's own Tailscale IP) with `Authorization: Bearer $API_SERVER_KEY`. Empty transcripts are logged and dropped (Hermes 400s on empty input). The voice context `"[Voice message from Apple Watch via InstantHermes]\n\nUser said: <transcript>"` is prepended server-side. If the submit carried a `delivery_target`, the backend polls `GET /v1/runs/{run_id}` until the run completes and delivers the final `output` text to that platform's home channel via `hermes send --to <platform>` — the agent has no callable `send_message` tool in hermes-agent, so delivery must happen backend-side.
 - **Voxtral call:** `POST https://api.mistral.ai/v1/audio/transcriptions`, multipart `file=@recording.aac` (`audio/aac`), `model=voxtral-mini-latest`, `Authorization: Bearer $MISTRAL_API_KEY` → `{"text": "..."}`. **If Mistral rejects raw ADTS** (verify during implementation with a real clip): one-line fallback — `ffmpeg -i in.aac -ar 16000 -ac 1 out.wav`, retry. ffmpeg is already on the raspi (Hermes dependency).
 - **Cleanup:** background sweeper deletes recordings idle > 10 min (watch died mid-recording → nothing transcribed, nothing submitted).
 - **Auth:** reject missing/wrong bearer with 401 (defense in depth; the port is also Tailscale-IP-bound only).
@@ -192,13 +197,13 @@ Then ensure `hermes gateway` runs persistently (the API server only exists insid
 
 ## 5. Watch-side recording & streaming pipeline (PCM float32)
 
-**Revised during implementation (2026-10-11):** AAC encoding via `AVAudioConverter` requires `AudioToolbox`, which is **not available on watchOS**. The implemented approach streams **16 kHz mono float32 PCM** — the documented fallback from the original plan. Bandwidth is ~32 KB/s over the tailnet, which is trivial. The backend wraps the PCM in a WAV container (IEEE float32) before sending to Voxtral.
+**Revised during implementation (2026-10-11):** AAC encoding via `AVAudioConverter` requires `AudioToolbox`, which is **not available on watchOS**. The implemented approach streams **16 kHz mono float32 PCM** — the documented fallback from the original plan. Bandwidth is ~64 KB/s over the tailnet, which is trivial. The backend wraps the PCM in a WAV container (IEEE float32) before sending to Voxtral.
 
 Pipeline replacing the original raw-float32 chunk sender:
 
 1. `AVAudioEngine` tap (unchanged — waveform levels + silence detection keep working off it).
 2. `AVAudioConverter`: PCM float32 at hardware rate → **PCM float32, 16 kHz, mono** (sample rate + channel conversion; no codec encoding needed).
-3. **Batch** samples; flush as one chunk POST every ~0.5 s or ~4 KB. That is ~1 tiny request/sec over the tailnet.
+3. **Batch** samples; flush as one chunk POST every ~1 s (~64 KB). That is ~1 request/sec over the tailnet — large enough that per-request RTT cannot make the serial upload queue fall behind (with ~4 KB chunks the backlog drained at submit, stalling "Sending…").
 4. Each chunk POST carries `X-Recording-ID` + incrementing `X-Chunk-Sequence` + `X-Audio-Format: pcm-float32`. **Retry** failed POSTs 3× (0.5/1/2 s backoff); if still failing → stop recording with an error (sequences stay contiguous by construction; the backend would 409 a gap anyway). Chunk uploads go through a small serial queue so finalize/cancel can wait for in-flight chunks to settle.
 
 **Backend WAV wrapping:** the stdlib-only Python backend uses `struct` to write a minimal WAV header (IEEE float32, 16 kHz, mono, 46-byte header) around the concatenated PCM chunks, then sends the `.wav` to Voxtral.
@@ -209,30 +214,49 @@ Pipeline replacing the original raw-float32 chunk sender:
 
 ```text
 idle
-  └─ start ─→ recording ── Submit / 3 s silence ──→ transcribing ── transcript ──→ submitting ── 202 ──→ idle
-                  │                                      │
-                  └─ Cancel ──→ idle                     └─ Cancel ──→ idle (discard transcript)
+  └─ start ─→ recording ── Submit / 3 s silence ──→ submitting ── 202 ──→ idle
+                  │
+                  └─ Cancel ──→ idle
 
-recording    : streaming chunk POSTs; Cancel + Submit available
-transcribing : finalize POST in flight (Voxtral); Cancel still available —
-               the transcript is discarded when it arrives, never submitted
-submitting   : POST /v1/runs in flight; no Cancel — 202 is the point of no return
+recording  : streaming chunk POSTs; Cancel + Submit available
+submitting : submit POST in flight; no Cancel — once the backend accepts (202)
+             it owns the recording: transcription + Hermes submission happen server-side
 ```
+- **Empty transcript** (silence/hallucination): the backend logs it and does not POST to `/v1/runs` (it 400s on empty input).
+- **Transcription happens server-side after Submit** (~1–5 s for a short clip), so the watch returns to idle immediately — truly fire and forget. A cancelled recording never costs a Voxtral call (Cancel discards the spool before submit).
+- Timeouts: submit POST 15 s (returns 202 in well under 1 s), Voxtral 60 s and `/v1/runs` 15 s server-side, chunks 10 s; the backend polls the run for up to 300 s before giving up on response delivery.
 
-- **Empty transcript** (silence/hallucination): do not POST to `/v1/runs` (it 400s on empty input); show "didn't catch that", reset.
-- **Transcription latency sits on the Submit path** (~1–5 s for a short clip) so a **cancelled recording never costs a Voxtral call**. Alternative if instant Submit is preferred: the backend transcribes eagerly at stream end, the app holds the text, and Submit just POSTs it. Cancellation semantics are identical either way. **Open choice — finalize-on-Submit is the default.**
-- Timeouts: finalize 60 s (Voxtral), `/v1/runs` 15 s (retry once, same `Idempotency-Key`), chunks 10 s.
+### 5.2 Message submission & response delivery (backend → Hermes → channel)
 
-### 5.2 Message submission
+The watch never talks to Hermes. On submit, the backend:
+
+1. POSTs the transcript to Hermes itself, with a fixed voice context prepended:
+   `"[Voice message from Apple Watch via InstantHermes]\n\nUser said: <transcript>"`.
+   (The agent's `send_message` tool does **not** exist as a model tool in
+   hermes-agent — it is intentionally not agent-callable — so delivery cannot
+   rely on the agent; the backend does it.)
+2. If the watch sent a `delivery_target` (JSON body on the submit action),
+   polls `GET /v1/runs/{run_id}` (the `/events` endpoint is live-only) until
+   the run completes, reads the final assistant text from `output`, and
+   delivers it to that platform's home channel via `hermes send --to <platform>`
+   (non-interactive; uses Hermes's own client, so E2EE works; the gateway must
+   be running for the persistent session to be reused).
 
 ```bash
-curl -X POST http://raspi5.<tailnet>.ts.net:8642/v1/runs \
+curl -X POST http://$API_SERVER_HOST:8642/v1/runs \
   -H "Authorization: Bearer $API_SERVER_KEY" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: <recording-uuid>" \
   -d '{"input": "<transcript>"}'
-# → 202 {"run_id":"run_...","status":"started"} → fire-and-forget, app returns to idle
+# → 202 {"run_id":"run_...","status":"started"} → fire-and-forget
+
+curl http://$API_SERVER_HOST:8642/v1/runs/<run_id> -H "Authorization: Bearer $API_SERVER_KEY"
+# → {..., "status": "completed", "output": "<final assistant text>", ...}
+
+hermes send --to matrix "<final assistant text>"   # deliver to the matrix home channel
 ```
+
+The backend targets `http://$API_SERVER_HOST:$API_SERVER_PORT/v1/runs` (default port `8642`, host from `~/.hermes/.env`, falling back to its own Tailscale IP).
 
 Omit `session_id` → fresh session per message (matches the product vision). `GET /health` (no auth) serves as the connectivity check.
 
@@ -242,11 +266,11 @@ Omit `session_id` → fresh session per message (matches the product vision). `G
 |---|---|---|
 | During recording | Stop tap, drop batch, POST `cancel` → backend discards spooled chunks. | **No** — `/v1/runs` never called |
 | Watch dies mid-recording | Backend sweeper deletes the partial spool after TTL. | **No** |
-| During transcribing (Submit tapped, Voxtral in flight) | Keep Cancel available: when the transcript arrives, the app **discards it** — never POSTs to `/v1/runs`. (Cost: one Voxtral call; effect on Hermes: none.) | **No** |
-| During `/v1/runs` POST (submitting) | No cancel UI; aborting mid-POST would also prevent processing (the server only dispatches on complete bodies), but 202 is treated as the point of no return. Fire-and-forget means the user is not waiting anyway. | Submitted by explicit user action |
+| During submitting (submit POST in flight) | No cancel UI — the POST completes in well under a second; 202 is the point of no return. | Accepted by explicit user action |
+| After 202 (backend transcribing / forwarding) | Too late to cancel from the watch — the backend owns the recording. (A future "cancel a submitted message" can use `POST /v1/runs/{id}/stop`.) | Processing has begun |
 | Future "cancel a submitted message" | Keep the `run_id` → `POST /v1/runs/{id}/stop` (interrupts at the next safe point, settles `cancelled`). Needed for interactive mode later. | Cooperative stop |
 
-The invariant holds: **anything submitted to the STT backend is never "processed as a complete message to Hermes" — only the gated `/v1/runs` POST is, and Cancel at any point before it means it never fires.**
+The invariant holds: **anything submitted to the STT backend is never "processed as a complete message to Hermes" — only the backend's gated `/v1/runs` POST is, and Cancel at any point before the submit is accepted means it never fires.**
 
 ## 7. Config & secrets
 
@@ -293,9 +317,37 @@ The invariant holds: **anything submitted to the STT backend is never "processed
 3. ~~ATS mechanics with `GENERATE_INFOPLIST_FILE=YES`~~ **RESOLVED:** Switched to physical Info.plist files in `Config/` directory with `NSAppTransportSecurity` → `NSExceptionDomains` → `ts.net` exception. `GENERATE_INFOPLIST_FILE=NO`.
 4. Gateway bind ordering vs tailscaled (systemd `After=/Requires=`; Hermes API server retry behavior). **OPEN:** Verify on actual raspi setup.
 
+### 8.1 Revision (2026-10-11, later same day): fire-and-forget backend
+
+| File | Change |
+|---|---|
+| `backend/server.py` | Submit returns `202` immediately; a background thread transcribes (Voxtral) and POSTs the transcript to Hermes `/v1/runs` (`Idempotency-Key` = recording ID); optional `delivery_instruction` JSON body on submit; Hermes target from `API_SERVER_HOST`/`API_SERVER_PORT` |
+| `backend/instanthermes-stt.service` | `python3 -u` so the background worker's logs are actually emitted |
+| `InstantHermesWatchApp/Networking/STTClient.swift` | `submit` is fire-and-forget (expects 202), sends optional `delivery_instruction` body |
+| `InstantHermesWatchApp/Services/AudioRecordingService.swift` | `submit` returns `Void` |
+| `InstantHermesWatchApp/ViewModels/RecordingViewModel.swift` | State machine reduced to idle → recording → submitting → idle; Hermes submission moved server-side; cancel also stops the audio engine |
+| `InstantHermesWatchApp/Models/RecordingState.swift` | Removed `.transcribing` |
+| `InstantHermesWatchApp/Networking/HermesClient.swift` | Removed — the watch no longer talks to Hermes |
+| `InstantHermesWatchApp/Views/ContentView.swift` | Auto-start also when the config arrives after launch |
+| `InstantHermesWatchApp/Localizable.xcstrings` | Removed unused "Transcribing…" / "Didn't catch that" |
+
+### 8.2 Revision (2026-10-11, later still): response delivery + streaming fix
+
+The agent-side delivery instruction (`MUST use the send_message tool…`) was **unsatisfiable**: in hermes-agent, `send_message` is intentionally not an agent-callable model tool, and `api_server` runs have no delivery obligation bound to a channel. The backend now delivers the response itself. Also, the chunk batcher emitted ~4 KB chunks every ~64 ms, which the serial upload queue could not keep up with over the watch→Pi path — the backlog drained at submit, stalling "Sending…".
+
+| File | Change |
+|---|---|
+| `backend/server.py` | Submit body carries `delivery_target`; the backend prepends the voice context, polls `GET /v1/runs/{id}` until the run completes, and delivers the final `output` via `hermes send --to <platform>` (serialized; needs the gateway running for the persistent E2EE session) |
+| `InstantHermesWatchApp/Networking/STTClient.swift` | Submit body is `{"delivery_target": ...}` |
+| `InstantHermesWatchApp/Services/AudioRecordingService.swift` | `submit` takes `deliveryTarget`; chunk batching raised to ~1 s / 64 KB so the serial upload queue keeps up with recording (submit no longer stalls while a backlog drains) |
+| `InstantHermesWatchApp/ViewModels/RecordingViewModel.swift` | Passes `deliveryTarget` |
+| `InstantHermesWatchApp/Utilities/AppConfig.swift` | Removed `deliveryInstruction` (the voice context now lives in the backend) |
+| `InstantHermes/Services/AppConfig.swift` | Removed dead `deliveryInstruction` |
+| `InstantHermes/SettingsView.swift` | Footer text no longer describes the send_message mechanism |
+
 ## 11. Open items
 
-- **§5.1 RESOLVED:** finalize-on-Submit implemented (default). No wasted Voxtral calls; Submit takes ~1–5 s. Cancel during transcription discards the transcript.
+- **§5.1 RESOLVED:** fire-and-forget — the backend transcribes and forwards after accepting the submit (202). The watch never waits for transcription; Cancel discards the spool before submit.
 - **Backend location RESOLVED:** `backend/` in this repo.
 - iPhone settings UI: **implemented** (basic version in `SettingsView.swift`).
 - **Verify on actual raspi:** end-to-end test with real Hermes gateway + Voxtral.

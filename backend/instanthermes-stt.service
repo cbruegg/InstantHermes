@@ -4,7 +4,8 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 %h/InstantHermes-backend/server.py
+# -u: unbuffered stdout so the background worker's transcription/forwarding logs are actually emitted
+ExecStart=/usr/bin/python3 -u %h/InstantHermes-backend/server.py
 Restart=always
 RestartSec=5
 

@@ -1,9 +1,13 @@
 # InstantHermes STT Backend
 
 A stdlib-only Python service that receives streamed audio chunks from the
-Apple Watch, reassembles them, and transcribes via Mistral Voxtral. The
-transcript is returned to the watch, which then submits it to the Hermes API
-server (`/v1/runs`).
+Apple Watch, reassembles them, transcribes via Mistral Voxtral, and submits
+the transcript to the Hermes API server (`/v1/runs`) itself. Fire and
+forget: the submit action is accepted with `202` immediately; transcription
+and the Hermes submission happen in a background thread, so the watch never
+waits for transcription. If the watch sent a delivery target, the backend
+also fetches the run's final response and delivers it to that platform's
+home channel (e.g. Matrix) via `hermes send`.
 
 ## Architecture
 
@@ -13,13 +17,36 @@ Apple Watch
     → instanthermes-stt (:8643, this service)
       → wraps PCM in WAV container
         → Mistral Voxtral (api.mistral.ai)
-          → transcript text returned to watch
-            → watch POSTs to Hermes /v1/runs (:8642)
+          → transcript forwarded to Hermes /v1/runs (:8642)
+            → 202 {"run_id": ...} — the watch already moved on (fire and forget)
+            → final response delivered to the delivery target's home channel
+              (e.g. matrix, via `hermes send`) when a delivery target is set
 ```
 
 Note: AAC encoding via AVAudioConverter requires AudioToolbox, which is not
 available on watchOS. PCM streaming is the documented fallback (PLAN.md §5):
-~32 KB/s over the tailnet is trivial bandwidth.
+~64 KB/s over the tailnet is trivial bandwidth.
+
+## Hermes forwarding & response delivery
+
+On `submit`, the backend transcribes the audio and POSTs the transcript to
+the Hermes API server itself, with a fixed voice context prepended:
+
+- URL: `http://$API_SERVER_HOST:$API_SERVER_PORT/v1/runs` (default port `8642`;
+  host read from `~/.hermes/.env`, falling back to the machine's own Tailscale IP)
+- Auth: `Authorization: Bearer $API_SERVER_KEY` (the same key the watch uses)
+- `Idempotency-Key: <recording-id>` — retries never create duplicate runs
+- Input: `"[Voice message from Apple Watch via InstantHermes]\n\nUser said: <transcript>"`
+- Empty transcripts are logged and dropped (Hermes 400s on empty input)
+- If the submit carried a `delivery_target` (e.g. `"matrix"`), the backend
+  polls `GET /v1/runs/{run_id}` until the run completes, reads the final
+  assistant text from `output`, and delivers it to that platform's home
+  channel via `hermes send --to <platform>` (non-interactive; uses Hermes's
+  own client so E2EE works; keep the hermes gateway running so the persistent
+  session is reused). Note: the agent has no callable `send_message` tool in
+  hermes-agent — delivery must happen backend-side.
+- Background results are logged to stdout — watch them with
+  `journalctl --user -u instanthermes-stt -f` (the unit runs `python3 -u`)
 
 ## Prerequisites
 
@@ -102,12 +129,17 @@ for f in /tmp/chunk_*; do
   seq=$((seq + 1))
 done
 
-# Submit for transcription
+# Submit — accepted immediately; transcription, Hermes forwarding, and response
+# delivery happen in the background
 curl -X POST "http://$HOST:8643/audio" \
   -H "Authorization: Bearer $KEY" \
   -H "X-Recording-ID: $RID" \
-  -H "X-Action: submit"
-# → {"text": "..."}
+  -H "X-Action: submit" \
+  -H "Content-Type: application/json" \
+  -d '{"delivery_target": "matrix"}'
+# → 202 {"status": "accepted"}
+# Watch the service logs for the background result:
+#   journalctl --user -u instanthermes-stt -f
 ```
 
 ## API Contract
@@ -118,7 +150,7 @@ All requests (except `GET /health`) carry `Authorization: Bearer <API_SERVER_KEY
 |--------|------|---------|------|----------|
 | GET | `/health` | — | — | `200 {"ok": true, "mistral_configured": bool}` |
 | POST | `/audio` | `X-Recording-ID`, `X-Chunk-Sequence`, `X-Audio-Format: pcm-float32`, `X-Sample-Rate` | raw PCM float32 bytes | `200 {"ok": true}` |
-| POST | `/audio` | `X-Recording-ID`, `X-Action: submit` | — | `200 {"text": "..."}` or `409`/`503` |
+| POST | `/audio` | `X-Recording-ID`, `X-Action: submit` | optional JSON `{"delivery_target": "matrix"}` | `202 {"status": "accepted"}` (immediately; processed in background) or `404`/`409`/`503` |
 | POST | `/audio` | `X-Recording-ID`, `X-Action: cancel` | — | `200 {"ok": true}` |
 
 Supported `X-Audio-Format` values: `pcm-float32` (default), `aac-adts`.

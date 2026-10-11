@@ -11,7 +11,7 @@
 //
 //  Note: AAC encoding via AVAudioConverter requires AudioToolbox, which is not
 //  available on watchOS. PCM streaming is the documented fallback (PLAN.md §5):
-//  ~32 KB/s over the tailnet is trivial bandwidth.
+//  ~64 KB/s over the tailnet is trivial bandwidth.
 //
 
 import Foundation
@@ -68,9 +68,11 @@ protocol AudioRecordingService: AnyObject {
     /// Does not send any submit/cancel signal.
     func stop() async
 
-    /// Submits the recording for transcription.
-    /// Returns the transcribed text. Throws on STT failure.
-    func submit(recordingID: UUID) async throws -> String
+    /// Submits the recording to the backend. Fire and forget: returns once the
+    /// backend has accepted the audio (202); transcription, the Hermes
+    /// submission, and response delivery happen server-side.
+    /// Throws on upload/acceptance failure.
+    func submit(recordingID: UUID, deliveryTarget: String?) async throws
 
     /// Cancels the recording — tells the backend to discard spooled chunks.
     func cancel(recordingID: UUID) async
@@ -168,14 +170,17 @@ final class SilenceDetector: @unchecked Sendable {
     }
 }
 
-/// Batches PCM audio data and flushes it as chunk uploads
-/// every ~0.5 seconds or ~4 KB, whichever comes first.
+/// Batches PCM audio data and flushes it as one chunk upload per ~1 s
+/// (~64 KB of 16 kHz float32 mono). Large chunks keep the serial upload
+/// queue from falling behind: the watch→Pi path (Bluetooth/WiFi hop plus
+/// tailnet) has enough per-request RTT that small ~4 KB chunks made the
+/// backlog drain — and "Sending…" block — at submit time.
 /// Runs uploads on a serial queue so sequences stay contiguous.
 actor ChunkBatcher {
     private var buffer = Data()
     private var lastFlushTime = Date()
-    private let flushInterval: TimeInterval = 0.5
-    private let flushSizeThreshold: Int = 4096
+    private let flushInterval: TimeInterval = 1.0
+    private let flushSizeThreshold: Int = 65536
 
     private let recordingID: UUID
     private let sttClient: STTClient
@@ -432,7 +437,7 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
         }
     }
 
-    func submit(recordingID: UUID) async throws -> String {
+    func submit(recordingID: UUID, deliveryTarget: String? = nil) async throws {
         // Check for upload errors first
         if let error = await batcher?.getAndClearError() {
             throw AudioRecordingError.uploadFailed(error)
@@ -442,7 +447,7 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
             throw AudioRecordingError.serverNotConfigured
         }
 
-        return try await client.submit(recordingID: recordingID)
+        try await client.submit(recordingID: recordingID, deliveryTarget: deliveryTarget)
     }
 
     func cancel(recordingID: UUID) async {
