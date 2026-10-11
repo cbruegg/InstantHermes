@@ -93,9 +93,20 @@ struct ContentView: View {
             }
 
         case .submitting:
-            // Fire and forget: the submit POST is quick; no cancel once sent
-            ProgressView()
-                .controlSize(.small)
+            // Submit POST in flight — Cancel is still available.
+            // Tapping Cancel interrupts the submit task (if the POST hasn't
+            // been sent) and sends a cancel to the backend, which aborts
+            // processing before transcription and before the Hermes POST.
+            HStack(spacing: 8) {
+                Button("Cancel", role: .destructive) {
+                    viewModel.cancelRecording()
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+
+                ProgressView()
+                    .controlSize(.small)
+            }
         }
     }
 }

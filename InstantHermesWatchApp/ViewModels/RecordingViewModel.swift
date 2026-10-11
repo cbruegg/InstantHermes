@@ -34,9 +34,11 @@ final class RecordingViewModel: ObservableObject {
     var isSubmitting: Bool { state == .submitting }
     var isBusy: Bool { state == .submitting }
 
-    /// Whether Cancel is available (recording only — once submitted, the
-    /// backend owns the recording).
-    var canCancel: Bool { state == .recording }
+    /// Whether Cancel is available. Cancel is available during recording AND
+    /// during submitting (while the submit POST is in flight, or after 202
+    /// while the backend is processing). Once cancelled, the backend aborts
+    /// transcription and will not submit to Hermes.
+    var canCancel: Bool { state == .recording || state == .submitting }
 
     // MARK: - Dependencies
 
@@ -44,6 +46,10 @@ final class RecordingViewModel: ObservableObject {
     private let configStore: AppConfigStore
     private var levelMonitorTimer: AnyCancellable?
     private var recordingID: UUID?
+    /// The in-flight submit task. Stored so cancel can interrupt it before
+    /// the submit POST is sent (e.g. user taps Cancel while chunks are
+    /// still being flushed).
+    private var submitTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -103,16 +109,36 @@ final class RecordingViewModel: ObservableObject {
     }
 
     /// Cancels the recording: stops the audio engine and tells the backend
-    /// to discard the spooled audio. Only available while recording.
+    /// to discard the spooled audio. Available during recording AND submitting.
+    ///
+    /// - During `.recording`: stops the engine, discards spooled chunks on the
+    ///   backend. The backend never starts transcription.
+    /// - During `.submitting`: interrupts the in-flight submit task (if the
+    ///   submit POST hasn't been sent yet) and sends a cancel action to the
+    ///   backend. If the backend already accepted (202), the cancel signals
+    ///   the background worker to abort before transcription and before the
+    ///   Hermes POST.
     func cancelRecording() {
-        guard state == .recording, let id = recordingID else { return }
+        guard state == .recording || state == .submitting, let id = recordingID else { return }
+
+        // Interrupt the submit task — prevents the submit POST from being sent
+        // if it hasn't gone out yet. If it's already in flight (or accepted),
+        // the cancel action below handles it.
+        submitTask?.cancel()
+        submitTask = nil
+
+        let wasRecording = state == .recording
 
         Task {
-            // Stop the engine first so no further chunks are streamed,
-            // then tell the backend to discard the recording.
-            await service.stop()
+            if wasRecording {
+                // Stop the engine first so no further chunks are streamed,
+                // then tell the backend to discard the recording.
+                await service.stop()
+            }
+            // Tell the backend to cancel — works for both spooled (pre-submit)
+            // and processing (post-202) recordings.
             await service.cancel(recordingID: id)
-            cleanup()
+            await MainActor.run { cleanup() }
         }
     }
 
@@ -128,21 +154,28 @@ final class RecordingViewModel: ObservableObject {
         statusMessage = String(localized: "Sending…")
         stopLevelMonitorTimer()
 
-        Task {
+        submitTask = Task {
             // Stop recording (flushes remaining chunks, waits for uploads)
             await service.stop()
+
+            // If the user tapped Cancel while we were flushing, don't send submit.
+            guard !Task.isCancelled else { return }
 
             do {
                 // 202 = accepted. The backend now owns the recording.
                 let deliveryTarget = configStore.load()?.deliveryTarget
                 try await service.submit(recordingID: id, deliveryTarget: deliveryTarget)
 
-                statusMessage = nil
-                cleanup()
+                await MainActor.run {
+                    statusMessage = nil
+                    cleanup()
+                }
             } catch {
-                statusMessage = nil
-                errorMessage = error.localizedDescription
-                cleanup()
+                await MainActor.run {
+                    statusMessage = nil
+                    errorMessage = error.localizedDescription
+                    cleanup()
+                }
             }
         }
     }
@@ -151,6 +184,7 @@ final class RecordingViewModel: ObservableObject {
 
     private func cleanup() {
         stopLevelMonitorTimer()
+        submitTask = nil
         state = .idle
         audioLevel = 0
         recordingID = nil

@@ -65,16 +65,20 @@ protocol AudioRecordingService: AnyObject {
     func start() async throws -> UUID
 
     /// Stops recording immediately. Flushes any pending batched chunks.
-    /// Does not send any submit/cancel signal.
+    /// Does not send any submit/cancel signal. Also stops any active keepalive timer.
     func stop() async
 
     /// Submits the recording to the backend. Fire and forget: returns once the
     /// backend has accepted the audio (202); transcription, the Hermes
     /// submission, and response delivery happen server-side.
     /// Throws on upload/acceptance failure.
+    /// After 202, starts a keepalive timer that pings the backend periodically
+    /// so the backend can detect client disconnection and abort processing.
     func submit(recordingID: UUID, deliveryTarget: String?) async throws
 
     /// Cancels the recording — tells the backend to discard spooled chunks.
+    /// If the recording is already being processed (after 202), signals the
+    /// backend to abort before submitting to Hermes.
     func cancel(recordingID: UUID) async
 }
 
@@ -305,6 +309,18 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
     private var batcher: ChunkBatcher?
     private var converter: AVAudioConverter?
 
+    // MARK: Keepalive
+
+    /// How often to send keepalive pings after submit (202).
+    private static let keepaliveInterval: TimeInterval = 5.0
+    /// How long to keep sending keepalives after submit (covers transcription +
+    /// Hermes submission time; the backend polls for up to 300s but the
+    /// critical gate is before the Hermes POST, which happens within ~60s).
+    private static let keepaliveDuration: TimeInterval = 90.0
+
+    /// Task that sends periodic keepalives. Cancelled on stop() or new recording.
+    private var keepaliveTask: Task<Void, Never>?
+
     /// Target PCM format: 16 kHz, mono, float32 (for Voxtral compatibility).
     private static let targetSampleRate: Double = 16000
     private static let targetChannelCount: AVAudioChannelCount = 1
@@ -328,6 +344,10 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
     }
 
     func start() async throws -> UUID {
+        // Cancel any existing keepalive from a previous recording
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
+
         // Load config and create STT client
         guard let config = configStore.load(), config.isValid else {
             throw AudioRecordingError.serverNotConfigured
@@ -412,6 +432,8 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
 
     func stop() async {
         cancellationToken.cancel()
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
 
         // Stop audio engine on a background queue — stop() can block.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -448,15 +470,48 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
         }
 
         try await client.submit(recordingID: recordingID, deliveryTarget: deliveryTarget)
+
+        // 202 accepted — start keepalive timer so the backend can detect
+        // if this client disconnects during processing.
+        startKeepalive(recordingID: recordingID, client: client)
     }
 
     func cancel(recordingID: UUID) async {
+        // Stop keepalives — we're cancelling, no need to signal liveness.
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
+
         // Flush any remaining chunks first (so backend has complete state),
         // then send cancel.
         await batcher?.flushAll()
         await batcher?.waitForUploads()
 
         try? await sttClient?.cancel(recordingID: recordingID)
+    }
+
+    // MARK: Keepalive
+
+    /// Starts a background task that sends keepalive pings to the backend
+    /// every `keepaliveInterval` seconds for `keepaliveDuration` seconds.
+    /// The backend uses these to detect client disconnection and abort
+    /// processing before submitting to Hermes.
+    private func startKeepalive(recordingID: UUID, client: STTClient) {
+        keepaliveTask?.cancel()
+
+        let interval = Self.keepaliveInterval
+        let duration = Self.keepaliveDuration
+
+        keepaliveTask = Task { [weak self] in
+            let deadline = Date().addingTimeInterval(duration)
+            while !Task.isCancelled && Date() < deadline {
+                // Send keepalive (best-effort)
+                await client.keepalive(recordingID: recordingID)
+
+                // Sleep until next beat, or exit early if cancelled
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            }
+            await MainActor.run { self?.keepaliveTask = nil }
+        }
     }
 
     // MARK: Private

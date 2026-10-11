@@ -47,7 +47,10 @@ Both raspi services bind the Tailscale IP only and require the
 same bearer key (API_SERVER_KEY).
 ```
 
-**The cancellation invariant:** the only request that turns audio into "a complete message to Hermes" is the backend's `POST /v1/runs` with the transcript. It fires **only** after the watch submits (manual tap or 3 s-silence auto-submit) **and** the backend accepted the audio (202). Cancel at any earlier point simply discards the spooled audio — that request never happens.
+**The cancellation invariant:** the only request that turns audio into "a complete message to Hermes" is the backend's `POST /v1/runs` with the transcript. It fires **only** after the watch submits (manual tap or 3 s-silence auto-submit) **and** the backend accepted the audio (202). The backend enforces this invariant with two mechanisms:
+
+1. **Cancel action** — works at any point before the Hermes POST. During recording, it discards spooled chunks. During processing (after 202), it signals the background worker thread to abort. The worker checks the cancellation flag before transcription and again before the Hermes POST.
+2. **Keepalive liveness** — after submit (202), the watch sends periodic `X-Action: keepalive` pings (every 5 s for 90 s). The backend checks keepalive freshness before the Hermes POST — if the client has gone silent (app killed, out of range, network drop), processing is aborted and `/v1/runs` is never called.
 
 ## 3. The STT backend service (`instanthermes-stt`)
 
@@ -70,15 +73,18 @@ POST /audio                       — chunk upload
 
 POST /audio                       — action (X-Action header present → not a chunk)
   X-Recording-ID: <uuid>
-  X-Action: submit | cancel
-  → submit: 202 {"status": "accepted"}                          (immediately — fire and forget;
-            optional JSON body {"delivery_target": "matrix"}    the backend transcribes (Voxtral),
-            → the Hermes response is delivered to that         POSTs /v1/runs in a background
-            platform's home channel via `hermes send`          thread, and delivers the response)
-            404 {"error": "recording_not_found"}
-            409 {"error": "audio_incomplete", "missing": [..]}  (sequence gap)
-            503 {"error": "stt_unavailable", ...}               (no Mistral key — fast fail)
-  → cancel: 200 {"ok": true}                                    (discard buffered chunks)
+  X-Action: submit | cancel | keepalive
+  → submit:   202 {"status": "accepted"}                          (immediately — fire and forget;
+             optional JSON body {"delivery_target": "matrix"}    the backend transcribes (Voxtral),
+             → the Hermes response is delivered to that         POSTs /v1/runs in a background
+             platform's home channel via `hermes send`          thread, and delivers the response)
+             404 {"error": "recording_not_found"}
+             409 {"error": "audio_incomplete", "missing": [..]}  (sequence gap)
+             503 {"error": "stt_unavailable", ...}               (no Mistral key — fast fail)
+  → cancel:   200 {"ok": true}                                    (discard spooled chunks OR signal
+                                                                   the background worker to abort)
+  → keepalive: 200 {"ok": true}                                   (client liveness ping; sent by
+                                                                   the watch every 5 s after submit)
 
 GET /health → 200 {"ok": true, "mistral_configured": true|false}
 ```
@@ -215,15 +221,17 @@ Pipeline replacing the original raw-float32 chunk sender:
 ```text
 idle
   └─ start ─→ recording ── Submit / 3 s silence ──→ submitting ── 202 ──→ idle
-                  │
-                  └─ Cancel ──→ idle
+                  │                                       │
+                  └─ Cancel ──────────────────────────────┘
 
 recording  : streaming chunk POSTs; Cancel + Submit available
-submitting : submit POST in flight; no Cancel — once the backend accepts (202)
-             it owns the recording: transcription + Hermes submission happen server-side
+submitting : submit POST in flight; Cancel still available — interrupts the
+             submit task and signals the backend to abort processing.
+             After 202: keepalives run in background (every 5 s, 90 s total).
 ```
 - **Empty transcript** (silence/hallucination): the backend logs it and does not POST to `/v1/runs` (it 400s on empty input).
-- **Transcription happens server-side after Submit** (~1–5 s for a short clip), so the watch returns to idle immediately — truly fire and forget. A cancelled recording never costs a Voxtral call (Cancel discards the spool before submit).
+- **Transcription happens server-side after Submit** (~1–5 s for a short clip), so the watch returns to idle immediately — truly fire and forget. A cancelled recording never costs a Voxtral call (Cancel discards the spool before submit) and never reaches Hermes (Cancel signals the worker to abort before the `/v1/runs` POST).
+- **Keepalive**: after 202, the watch sends `X-Action: keepalive` every 5 s for 90 s. The backend allows 15 s without a keepalive before declaring the client gone; if keepalives stop before the Hermes POST, the backend aborts.
 - Timeouts: submit POST 15 s (returns 202 in well under 1 s), Voxtral 60 s and `/v1/runs` 15 s server-side, chunks 10 s; the backend polls the run for up to 300 s before giving up on response delivery.
 
 ### 5.2 Message submission & response delivery (backend → Hermes → channel)
@@ -260,17 +268,25 @@ The backend targets `http://$API_SERVER_HOST:$API_SERVER_PORT/v1/runs` (default 
 
 Omit `session_id` → fresh session per message (matches the product vision). `GET /health` (no auth) serves as the connectivity check.
 
-## 6. End-to-end cancellation — analysis
+## 6. End-to-end cancellation & liveness — analysis
 
-| Cancel timing | What happens | Hermes processes anything? |
+| Scenario | What happens | Hermes processes anything? |
 |---|---|---|
-| During recording | Stop tap, drop batch, POST `cancel` → backend discards spooled chunks. | **No** — `/v1/runs` never called |
+| Cancel during recording | Stop tap, drop batch, POST `cancel` → backend discards spooled chunks. | **No** — `/v1/runs` never called |
+| Cancel during submitting (submit POST in flight) | Interrupts the submit task (prevents the POST if not yet sent); sends `cancel` to backend. If the POST already went out (202), the backend signals the worker to abort. | **No** — worker checks cancellation before transcription and before `/v1/runs` |
+| Cancel after 202 (backend transcribing) | `cancel` action sets the worker's cancellation event. Worker checks before Hermes POST and aborts. | **No** — cancellation checked at 3 gates: before transcription, after transcription, before Hermes POST |
+| Watch dies / goes out of range after 202 | Keepalives stop. Backend's `is_client_alive()` returns false after 15 s. Worker aborts before Hermes POST. | **No** — keepalive freshness checked before `/v1/runs` |
 | Watch dies mid-recording | Backend sweeper deletes the partial spool after TTL. | **No** |
-| During submitting (submit POST in flight) | No cancel UI — the POST completes in well under a second; 202 is the point of no return. | Accepted by explicit user action |
-| After 202 (backend transcribing / forwarding) | Too late to cancel from the watch — the backend owns the recording. (A future "cancel a submitted message" can use `POST /v1/runs/{id}/stop`.) | Processing has begun |
+| Backend worker thread dies (OOM, crash) | Sweeper cleans up stale processing entries after ~7 min. | **No** — worker is gone |
 | Future "cancel a submitted message" | Keep the `run_id` → `POST /v1/runs/{id}/stop` (interrupts at the next safe point, settles `cancelled`). Needed for interactive mode later. | Cooperative stop |
 
-The invariant holds: **anything submitted to the STT backend is never "processed as a complete message to Hermes" — only the backend's gated `/v1/runs` POST is, and Cancel at any point before the submit is accepted means it never fires.**
+**The invariant holds:** the backend's `POST /v1/runs` is the only request that turns audio into "a message to Hermes". It fires **only** if:
+1. The watch submitted (manual tap or 3 s-silence auto-submit), AND
+2. The backend accepted the audio (202), AND
+3. The recording was **not cancelled** (checked at 3 gates in the worker), AND
+4. The client is **still alive** (keepalive freshness checked before the Hermes POST).
+
+If the backend loses connection to a client (keepalives stop) or cancel is clicked in the frontend, the backend MUST NOT continue the transcription and MUST NOT submit the message to the Hermes endpoint.
 
 ## 7. Config & secrets
 
@@ -352,3 +368,31 @@ The agent-side delivery instruction (`MUST use the send_message tool…`) was **
 - iPhone settings UI: **implemented** (basic version in `SettingsView.swift`).
 - **Verify on actual raspi:** end-to-end test with real Hermes gateway + Voxtral.
 - **Verify on actual watch:** PCM streaming + sample rate conversion quality.
+
+### 8.3 Revision (2026-10-11, later still): cancellation during processing + keepalive liveness
+
+**Requirement:** If the backend loses connection to a client or if "cancel" is clicked in the frontend, the backend MUST NOT continue the transcription and MUST NOT submit the message to the Hermes endpoint.
+
+Previously, cancel only worked before submit (discarding spooled chunks). After 202, the backend owned the recording and would always transcribe + submit to Hermes. There was no way to abort during processing, and no way to detect client disconnection.
+
+**Changes:**
+
+| File | Change |
+|---|---|
+| `backend/server.py` | Added `processing` dict (recording_id → {cancelled event, last_keepalive, client_ip}). Cancel action now signals processing workers. New `keepalive` action updates liveness timestamp. `process_recording` checks cancellation at 3 gates (before transcription, after transcription, before Hermes POST) and checks keepalive freshness before Hermes POST. Sweeper cleans up stale processing entries. |
+| `InstantHermesWatchApp/Networking/STTClient.swift` | Added `keepalive(recordingID:)` method (POST `X-Action: keepalive`). |
+| `InstantHermesWatchApp/Services/AudioRecordingService.swift` | Added keepalive timer: starts after 202, sends pings every 5 s for 90 s. Cancelled on `stop()`, `cancel()`, or new `start()`. |
+| `InstantHermesWatchApp/ViewModels/RecordingViewModel.swift` | `canCancel` now true for both `.recording` and `.submitting`. `cancelRecording()` interrupts the in-flight submit task and sends cancel to backend. Submit task checks `Task.isCancelled` before sending the POST. |
+| `InstantHermesWatchApp/Models/RecordingState.swift` | Updated docs: cancel available during submitting. |
+| `InstantHermesWatchApp/Views/ContentView.swift` | Cancel button now shown in `.submitting` state (next to ProgressView). |
+
+**Backend cancellation gates (in `process_recording`):**
+
+1. **Before transcription:** `is_processing_cancelled()` → abort immediately (saves a Voxtral API call).
+2. **After transcription:** `is_processing_cancelled()` → abort (transcript discarded, no Hermes POST).
+3. **Before Hermes POST:** `is_processing_cancelled()` OR `!is_client_alive()` → abort. This is the critical gate.
+
+**Keepalive parameters:**
+- Watch sends keepalive every 5 s for 90 s after 202.
+- Backend allows 15 s without a keepalive (`KEEPALIVE_TIMEOUT`) before declaring the client gone.
+- Grace period: the first 15 s after submit are always considered alive (first keepalive may be delayed).

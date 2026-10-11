@@ -7,6 +7,14 @@ carries a delivery target, the backend also fetches the run's final response
 (GET /v1/runs/{id}) and delivers it to that platform's home channel via the
 `hermes send` CLI — the agent has no callable send_message tool.
 
+Cancellation & liveness:
+  - Cancel during recording: discards spooled chunks (existing behavior).
+  - Cancel during processing (after 202): sets a per-recording event; the
+    worker thread checks it before transcription and before the Hermes POST.
+  - Keepalive: the watch sends X-Action: keepalive periodically after submit.
+    The backend checks keepalive freshness before the Hermes POST — if the
+    client has gone silent (app killed, out of range), processing is aborted.
+
 Stdlib only. Binds the machine's Tailscale IP. Bearer-auth with API_SERVER_KEY.
 
 Accepts two audio formats:
@@ -15,10 +23,14 @@ Accepts two audio formats:
 
 API contract:
   POST /audio  — chunk upload (X-Recording-ID, X-Chunk-Sequence, X-Audio-Format headers)
-  POST /audio  — action (X-Action: submit|cancel header present)
-    submit: 202 {"status": "accepted"} immediately; optional JSON body
-            {"delivery_target": "matrix"} tells the backend to deliver the
-            Hermes response to that platform's home channel.
+  POST /audio  — action (X-Action: submit|cancel|keepalive header present)
+    submit:   202 {"status": "accepted"} immediately; optional JSON body
+              {"delivery_target": "matrix"} tells the backend to deliver the
+              Hermes response to that platform's home channel.
+    cancel:   200 {"ok": true} — discards spooled chunks OR signals the
+              background worker to abort (if already processing).
+    keepalive: 200 {"ok": true} — updates the client-liveness timestamp.
+              Sent by the watch periodically after submit (202).
   GET  /health — health check
 """
 
@@ -89,6 +101,20 @@ delivery_lock = threading.Lock()
 recordings = {}
 lock = threading.Lock()
 
+# In-flight processing: recording_id -> {"cancelled": threading.Event,
+#   "last_keepalive": float, "client_ip": str}
+# Registered when submit is accepted (202); removed when the worker finishes.
+# The cancelled event is set by the cancel action; the worker checks it before
+# transcription and before the Hermes POST. last_keepalive is updated by the
+# keepalive action; the worker checks freshness before the Hermes POST.
+processing = {}
+processing_lock = threading.Lock()
+
+# How long after the last keepalive the client is considered gone.
+# The watch sends keepalives every KEEPALIVE_INTERVAL seconds; we allow 3 missed
+# beats before declaring the client disconnected.
+KEEPALIVE_TIMEOUT = 15.0  # seconds
+
 
 def tailscale_ip():
     """Discover this machine's Tailscale IPv4 address."""
@@ -102,6 +128,65 @@ def tailscale_ip():
     if not lines:
         raise RuntimeError("tailscale ip returned no addresses")
     return lines[0]
+
+
+def is_processing_cancelled(recording_id: str) -> bool:
+    """Check if a processing recording has been cancelled."""
+    with processing_lock:
+        state = processing.get(recording_id)
+        return state is not None and state["cancelled"].is_set()
+
+
+def is_client_alive(recording_id: str) -> bool:
+    """Check if the client is still sending keepalives.
+
+    Returns True if the last keepalive is within KEEPALIVE_TIMEOUT seconds.
+    A recording that was submitted but never received a keepalive is
+    considered alive for the first KEEPALIVE_TIMEOUT seconds (grace period
+    for the first keepalive to arrive).
+    """
+    with processing_lock:
+        state = processing.get(recording_id)
+        if state is None:
+            return False
+        age = time.time() - state["last_keepalive"]
+        return age <= KEEPALIVE_TIMEOUT
+
+
+def register_processing(recording_id: str, client_ip: str) -> threading.Event:
+    """Register a recording as being processed. Returns the cancellation event."""
+    cancelled = threading.Event()
+    with processing_lock:
+        processing[recording_id] = {
+            "cancelled": cancelled,
+            "last_keepalive": time.time(),
+            "client_ip": client_ip,
+        }
+    return cancelled
+
+
+def unregister_processing(recording_id: str):
+    """Remove a recording from the processing dict (worker finished)."""
+    with processing_lock:
+        processing.pop(recording_id, None)
+
+
+def update_keepalive(recording_id: str):
+    """Update the last-keepalive timestamp for a processing recording."""
+    with processing_lock:
+        state = processing.get(recording_id)
+        if state is not None:
+            state["last_keepalive"] = time.time()
+
+
+def cancel_processing(recording_id: str) -> bool:
+    """Signal a processing recording to abort. Returns True if it was processing."""
+    with processing_lock:
+        state = processing.get(recording_id)
+        if state is not None:
+            state["cancelled"].set()
+            return True
+        return False
 
 
 def wrap_pcm_float32_in_wav(pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
@@ -346,8 +431,18 @@ def process_recording(recording_id: str, raw_audio: bytes, audio_format: str, de
 
     Runs in a daemon thread after the submit request was accepted (202).
     All errors are logged — the watch has already moved on.
+
+    Cancellation & liveness checks:
+      1. Before transcription: if the recording was cancelled, abort immediately.
+      2. Before the Hermes POST: if cancelled OR the client has stopped
+         sending keepalives (disconnected), abort — do NOT submit to Hermes.
     """
     try:
+        # Check 1: cancelled before we even start transcription?
+        if is_processing_cancelled(recording_id):
+            print(f"Recording {recording_id}: cancelled before transcription — aborting")
+            return
+
         # Prepare audio for Voxtral based on format
         if audio_format == "pcm-float32":
             # Wrap raw float32 PCM in a WAV container
@@ -360,8 +455,25 @@ def process_recording(recording_id: str, raw_audio: bytes, audio_format: str, de
             filename = "recording.aac"
 
         text = voxtral_transcribe(audio_bytes, content_type, filename).strip()
+
+        # Check 2: cancelled during transcription?
+        if is_processing_cancelled(recording_id):
+            print(f"Recording {recording_id}: cancelled during transcription — not forwarding to Hermes")
+            return
+
         if not text:
             print(f"Recording {recording_id}: empty transcript, not forwarding to Hermes")
+            return
+
+        # Check 3: cancelled OR client disconnected before Hermes submission?
+        # This is the critical gate: the Hermes POST must not fire if the
+        # user cancelled or the client is no longer connected.
+        if is_processing_cancelled(recording_id):
+            print(f"Recording {recording_id}: cancelled before Hermes submission — aborting")
+            return
+
+        if not is_client_alive(recording_id):
+            print(f"Recording {recording_id}: client keepalive timed out — aborting Hermes submission")
             return
 
         run_id = submit_to_hermes(recording_id, text)
@@ -377,6 +489,8 @@ def process_recording(recording_id: str, raw_audio: bytes, audio_format: str, de
             deliver_response(delivery_target, output)
     except Exception as e:
         print(f"Recording {recording_id}: processing failed: {e}")
+    finally:
+        unregister_processing(recording_id)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -479,10 +593,22 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True})
 
     def _handle_action(self, recording_id: str, action: str):
-        """Handle submit or cancel action."""
+        """Handle submit, cancel, or keepalive action."""
         if action == "cancel":
+            # Cancel a spooled recording (before submit) — discard chunks.
             with lock:
-                recordings.pop(recording_id, None)
+                spooled = recordings.pop(recording_id, None)
+            # Cancel a processing recording (after submit, 202) — signal the worker.
+            was_processing = cancel_processing(recording_id)
+            if spooled is None and not was_processing:
+                # Unknown recording — still return 200 (best-effort cancel).
+                pass
+            self._send_json(200, {"ok": True})
+            return
+
+        if action == "keepalive":
+            # Client liveness ping — sent periodically by the watch after submit.
+            update_keepalive(recording_id)
             self._send_json(200, {"ok": True})
             return
 
@@ -546,6 +672,10 @@ class Handler(BaseHTTPRequestHandler):
         # Accept immediately; transcribe + forward to Hermes in the background
         self._send_json(202, {"status": "accepted"})
 
+        # Register in the processing dict so cancel/keepalive actions can reach
+        # the worker thread. The worker unregisters itself when done.
+        register_processing(recording_id, self.client_address[0])
+
         worker = threading.Thread(
             target=process_recording,
             args=(recording_id, raw_audio, audio_format, delivery_target),
@@ -555,7 +685,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def sweeper():
-    """Background thread: delete recordings idle > TTL_SECONDS."""
+    """Background thread: delete recordings idle > TTL_SECONDS.
+
+    Also cleans up stale processing entries (worker thread died without
+    unregistering, e.g. OOM kill). A processing entry is stale if it has
+    been around longer than the maximum expected processing time
+    (transcription + Hermes submission + response polling).
+    """
+    # Max time a recording can be in processing: transcription (60s) +
+    # Hermes submission (15s) + response polling (300s) + margin.
+    PROCESSING_TTL = RUN_POLL_TIMEOUT + 120  # ~7 minutes
+
     while True:
         time.sleep(60)
         now = time.time()
@@ -567,6 +707,16 @@ def sweeper():
             for rid in expired:
                 del recordings[rid]
                 print(f"Sweeper: expired recording {rid}")
+        with processing_lock:
+            stale = [
+                rid for rid, state in processing.items()
+                if now - state["last_keepalive"] > PROCESSING_TTL
+            ]
+            for rid in stale:
+                # Signal cancellation in case the worker is still alive
+                processing[rid]["cancelled"].set()
+                del processing[rid]
+                print(f"Sweeper: expired processing entry {rid}")
 
 
 def main():

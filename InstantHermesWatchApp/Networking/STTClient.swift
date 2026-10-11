@@ -139,6 +139,8 @@ final class STTClient: Sendable {
     }
 
     /// Cancels a recording — the backend discards all spooled chunks.
+    /// If the recording is already being processed (after 202), this signals
+    /// the background worker to abort before submitting to Hermes.
     func cancel(recordingID: UUID) async throws {
         var request = URLRequest(url: baseURL.appendingPathComponent("audio"))
         request.httpMethod = "POST"
@@ -152,6 +154,23 @@ final class STTClient: Sendable {
             // Cancel is best-effort — don't throw on failure
             return
         }
+    }
+
+    /// Sends a keepalive ping to the backend. Called periodically after submit
+    /// (202) to signal that the client is still connected. The backend checks
+    /// keepalive freshness before submitting to Hermes — if keepalives stop
+    /// (app killed, out of range), the backend aborts processing.
+    func keepalive(recordingID: UUID) async {
+        var request = URLRequest(url: baseURL.appendingPathComponent("audio"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 5
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(recordingID.uuidString, forHTTPHeaderField: "X-Recording-ID")
+        request.setValue("keepalive", forHTTPHeaderField: "X-Action")
+
+        // Best-effort — failures are silently ignored (the backend will
+        // time out the keepalive and abort on its own).
+        _ = try? await session.data(for: request)
     }
 
     // MARK: Health

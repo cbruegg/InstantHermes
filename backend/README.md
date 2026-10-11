@@ -151,9 +151,46 @@ All requests (except `GET /health`) carry `Authorization: Bearer <API_SERVER_KEY
 | GET | `/health` | — | — | `200 {"ok": true, "mistral_configured": bool}` |
 | POST | `/audio` | `X-Recording-ID`, `X-Chunk-Sequence`, `X-Audio-Format: pcm-float32`, `X-Sample-Rate` | raw PCM float32 bytes | `200 {"ok": true}` |
 | POST | `/audio` | `X-Recording-ID`, `X-Action: submit` | optional JSON `{"delivery_target": "matrix"}` | `202 {"status": "accepted"}` (immediately; processed in background) or `404`/`409`/`503` |
-| POST | `/audio` | `X-Recording-ID`, `X-Action: cancel` | — | `200 {"ok": true}` |
+| POST | `/audio` | `X-Recording-ID`, `X-Action: cancel` | — | `200 {"ok": true}` — discards spooled chunks OR signals the background worker to abort |
+| POST | `/audio` | `X-Recording-ID`, `X-Action: keepalive` | — | `200 {"ok": true}` — updates client-liveness timestamp |
 
 Supported `X-Audio-Format` values: `pcm-float32` (default), `aac-adts`.
+
+## Cancellation & Client Liveness
+
+The backend enforces a strict invariant: **`POST /v1/runs` (the only request that
+turns audio into a Hermes message) fires only if the recording was not cancelled
+AND the client is still connected.**
+
+### Cancel
+
+The `cancel` action works at any point before the Hermes POST:
+
+- **Before submit:** discards spooled chunks. Transcription never starts.
+- **After submit (202):** signals the background worker thread to abort via a
+  per-recording `threading.Event`. The worker checks the event at three gates:
+  1. Before transcription (saves a Voxtral API call)
+  2. After transcription (transcript discarded)
+  3. Before the Hermes POST (the critical gate)
+
+### Keepalive
+
+After submit (202), the watch sends `X-Action: keepalive` every 5 seconds for
+90 seconds. The backend tracks the last keepalive timestamp per recording and
+checks freshness before the Hermes POST:
+
+- `KEEPALIVE_TIMEOUT = 15.0` seconds — if no keepalive arrives within 15 s,
+  the client is considered gone (app killed, out of range, network drop).
+- Grace period: the first 15 s after submit are always considered alive.
+
+If keepalives stop before the Hermes POST, the backend aborts — `/v1/runs`
+is never called.
+
+### Sweeper
+
+The background sweeper thread also cleans up stale processing entries (worker
+thread died without unregistering, e.g. OOM kill). A processing entry is stale
+after ~7 minutes (transcription + Hermes submission + response polling + margin).
 
 ## Security
 
@@ -161,4 +198,6 @@ Supported `X-Audio-Format` values: `pcm-float32` (default), `aac-adts`.
 - Requires bearer auth matching `API_SERVER_KEY` (same key as Hermes)
 - 25 MB per-recording cap
 - 10-minute idle TTL (sweeper deletes abandoned recordings)
+- ~7-minute stale TTL for processing entries (sweeper cleans up dead workers)
 - Mistral API key never leaves the raspi
+- Cancel and keepalive actions are authenticated (same bearer token)

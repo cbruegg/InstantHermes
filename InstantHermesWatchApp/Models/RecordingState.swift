@@ -13,19 +13,28 @@ import Foundation
 /// ```
 /// idle
 ///   └─ start ─→ recording ── Submit / 3s silence ──→ submitting ── 202 ──→ idle
-///                   │
-///                   └─ Cancel ──→ idle
+///                   │                                      │
+///                   └─ Cancel ─────────────────────────────┘
 /// ```
 ///
 /// Fire and forget: once the backend accepts the submit (202), it transcribes
 /// the audio and forwards the transcript to Hermes in the background.
 /// The watch never waits for transcription.
+///
+/// Cancel is available in both `recording` and `submitting` states:
+/// - In `recording`: discards spooled chunks on the backend.
+/// - In `submitting`: interrupts the submit task and sends a cancel to the
+///   backend, which aborts processing (transcription + Hermes submission).
+/// After 202, the watch sends periodic keepalives so the backend can detect
+/// client disconnection and abort.
 enum RecordingState: Equatable, Sendable {
     /// No recording in progress.
     case idle
     /// Actively recording and streaming PCM chunks.
     case recording
-    /// Submit POST in flight. No cancel — once the backend accepts the audio,
-    /// transcription and Hermes submission happen server-side.
+    /// Submit POST in flight. Cancel is still available — it interrupts the
+    /// submit task (if the POST hasn't been sent) and signals the backend to
+    /// abort processing. Once the backend accepts (202), the watch returns to
+    /// idle and starts sending keepalives.
     case submitting
 }
