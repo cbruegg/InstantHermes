@@ -1,15 +1,12 @@
 [Unit]
 Description=InstantHermes STT backend (Mistral Voxtral)
-Requires=tailscaled.service
-After=network-online.target tailscaled.service
+After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/instanthermes-stt/server.py
+ExecStart=/usr/bin/python3 %h/InstantHermes-backend/server.py
 Restart=always
 RestartSec=5
-# Run as the same user as Hermes so ~/.hermes resolves
-# User=<hermes-user>
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

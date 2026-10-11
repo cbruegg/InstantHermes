@@ -38,22 +38,39 @@ On the Raspberry Pi:
 
 ## Installation
 
-```bash
-# Copy the server
-sudo mkdir -p /opt/instanthermes-stt
-sudo cp server.py /opt/instanthermes-stt/
+### User systemd service (recommended — no sudo needed)
 
-# Install the systemd unit
-sudo cp instanthermes-stt.service /etc/systemd/system/
-# Edit the unit to set User=<hermes-user> if Hermes runs as a non-root user:
-#   sudo systemctl edit instanthermes-stt
+```bash
+# Place the files in your home directory
+mkdir -p ~/InstantHermes-backend
+cp server.py ~/InstantHermes-backend/
+
+# Install the user systemd unit
+mkdir -p ~/.config/systemd/user
+cp instanthermes-stt.service ~/.config/systemd/user/
+
+# Enable lingering (so the service runs even when you're not logged in)
+sudo loginctl enable-linger $USER
 
 # Enable and start
-sudo systemctl daemon-reload
-sudo systemctl enable --now instanthermes-stt
+systemctl --user daemon-reload
+systemctl --user enable --now instanthermes-stt
 
 # Verify
-sudo systemctl status instanthermes-stt
+systemctl --user status instanthermes-stt
+curl http://$(tailscale ip -4):8643/health
+```
+
+### System systemd service (alternative — requires sudo)
+
+```bash
+sudo mkdir -p /opt/instanthermes-stt
+sudo cp server.py /opt/instanthermes-stt/
+sudo cp instanthermes-stt.service /etc/systemd/system/
+# Edit the unit to set User=<hermes-user>:
+#   sudo systemctl edit instanthermes-stt
+sudo systemctl daemon-reload
+sudo systemctl enable --now instanthermes-stt
 ```
 
 ## Testing

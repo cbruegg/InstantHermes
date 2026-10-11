@@ -1,6 +1,9 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Audio upload failed: %@" : {
+
+    },
     "Cancel" : {
       "comment" : "Button label to cancel the current recording.",
       "extractionState" : "manual",
@@ -13,26 +16,32 @@
         }
       }
     },
-    "Submit" : {
-      "comment" : "Button label to submit the current recording.",
+    "Didn't catch that" : {
+
+    },
+    "Failed to configure audio session: %@" : {
+      "comment" : "Error message shown when the audio session fails to configure. %@ is replaced with the underlying error description.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Submit"
+            "value" : "Failed to configure audio session: %@"
           }
         }
       }
     },
-    "Start Recording" : {
-      "comment" : "Button label to start a new recording.",
+    "Failed to create audio converter" : {
+
+    },
+    "Failed to start audio engine: %@" : {
+      "comment" : "Error message shown when the audio engine fails to start. %@ is replaced with the underlying error description.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Start Recording"
+            "value" : "Failed to start audio engine: %@"
           }
         }
       }
@@ -49,30 +58,6 @@
         }
       }
     },
-    "Failed to configure audio session: %@" : {
-      "comment" : "Error message shown when the audio session fails to configure. %@ is replaced with the underlying error description.",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Failed to configure audio session: %@"
-          }
-        }
-      }
-    },
-    "Failed to start audio engine: %@" : {
-      "comment" : "Error message shown when the audio engine fails to start. %@ is replaced with the underlying error description.",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Failed to start audio engine: %@"
-          }
-        }
-      }
-    },
     "NSMicrophoneUsageDescription" : {
       "comment" : "The message displayed to the user when the app requests microphone access (Info.plist).",
       "extractionState" : "manual",
@@ -84,7 +69,43 @@
           }
         }
       }
+    },
+    "Open the iPhone app to set up the server" : {
+
+    },
+    "Sending…" : {
+
+    },
+    "Server not configured. Open the iPhone app to set up the server." : {
+
+    },
+    "Start Recording" : {
+      "comment" : "Button label to start a new recording.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start Recording"
+          }
+        }
+      }
+    },
+    "Submit" : {
+      "comment" : "Button label to submit the current recording.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Submit"
+          }
+        }
+      }
+    },
+    "Transcribing…" : {
+
     }
   },
-  "version" : 1
+  "version" : "1.0"
 }
