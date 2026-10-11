@@ -23,6 +23,10 @@ final class WatchConnectivityManager: NSObject, ObservableObject {
     @Published var isReachable = false
     @Published var isCompanionAppInstalled = false
     @Published var configReceived = false
+    /// Set when a config received from the iPhone differs from the previously
+    /// cached config. Observers can use this to react to settings changes
+    /// (e.g. cancel an in-progress recording that was started with stale settings).
+    @Published private(set) var lastReceivedConfig: ServerConfig?
 
     private let configStore: AppConfigStore
 
@@ -58,26 +62,34 @@ final class WatchConnectivityManager: NSObject, ObservableObject {
     }
 
     private func handleConfigReply(_ reply: [String: Any]) {
-        guard let host = reply["host"] as? String,
-              let apiKey = reply["apiKey"] as? String,
-              !host.isEmpty, !apiKey.isEmpty else { return }
-
-        let deliveryTarget = reply["deliveryTarget"] as? String ?? ""
-        let config = ServerConfig(host: host, apiKey: apiKey, deliveryTarget: deliveryTarget)
-        try? configStore.save(config)
-        configReceived = true
+        processIncomingConfig(reply)
     }
 
     /// Handles an incoming config push from the iPhone app.
     private func handleConfigMessage(_ message: [String: Any]) {
-        guard let host = message["host"] as? String,
-              let apiKey = message["apiKey"] as? String,
+        processIncomingConfig(message)
+    }
+
+    /// Parses an incoming config from the iPhone, saves it to the Keychain,
+    /// and signals a change if it differs from the previously cached config.
+    private func processIncomingConfig(_ payload: [String: Any]) {
+        guard let host = payload["host"] as? String,
+              let apiKey = payload["apiKey"] as? String,
               !host.isEmpty, !apiKey.isEmpty else { return }
 
-        let deliveryTarget = message["deliveryTarget"] as? String ?? ""
-        let config = ServerConfig(host: host, apiKey: apiKey, deliveryTarget: deliveryTarget)
-        try? configStore.save(config)
+        let deliveryTarget = payload["deliveryTarget"] as? String ?? ""
+        let newConfig = ServerConfig(host: host, apiKey: apiKey, deliveryTarget: deliveryTarget)
+
+        let oldConfig = configStore.load()
+        try? configStore.save(newConfig)
         configReceived = true
+
+        // Signal a change only if there was a previous config that differs.
+        // This avoids a spurious "change" on first-time setup (oldConfig == nil),
+        // where the recording hasn't started yet and there's nothing to cancel.
+        if let oldConfig, oldConfig != newConfig {
+            lastReceivedConfig = newConfig
+        }
     }
 }
 

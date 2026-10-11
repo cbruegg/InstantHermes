@@ -66,6 +66,13 @@ struct ContentView: View {
                 viewModel.startRecordingIfIdle()
             }
         }
+        .onChange(of: connectivityManager.lastReceivedConfig) { _, newConfig in
+            guard newConfig != nil else { return }
+            // Settings were updated on the iPhone while we were recording with
+            // the old config — cancel so the user can start fresh. This goes
+            // through the normal cancel path (idle UI, no error message).
+            viewModel.cancelRecording()
+        }
     }
 
     @ViewBuilder
