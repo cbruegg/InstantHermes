@@ -7,8 +7,16 @@
 //
 //  Platform differences are handled via conditional compilation:
 //  - watchOS: observes WatchConnectivity for config sync from iPhone,
-//    auto-starts recording on launch, compact layout.
-//  - iOS: config is local (edited in the Settings tab), larger layout.
+//    auto-starts recording on launch AND on resume (scenePhase → .active),
+//    compact layout.
+//  - iOS: config is local (edited in the Settings tab), auto-starts on
+//    launch only (no auto-start on resume), larger layout.
+//
+//  The watchOS-only auto-start-on-resume is intentional: the watch app is
+//  a "glance and speak" interface where reopening the app should immediately
+//  begin recording. On iOS, the app is a full app with tabs; auto-starting
+//  on every resume would be surprising when the user just wants to check
+//  settings or history.
 //
 //  Created by Christian Brüggemann on 11.10.26.
 //
@@ -17,6 +25,9 @@ import SwiftUI
 
 struct RecordingView: View {
     @StateObject private var viewModel = RecordingViewModel()
+    #if os(watchOS)
+    @Environment(\.scenePhase) private var scenePhase
+    #endif
 
     /// Whether to auto-start recording when the view appears and config is ready.
     /// Both platforms default to true — the product is "instant" voice capture.
@@ -74,6 +85,15 @@ struct RecordingView: View {
             }
         }
         #if os(watchOS)
+        // INTENTIONAL watchOS-only behavior: auto-start recording when the
+        // app resumes (user reopens the already-running app). This is by
+        // design — the watch is a "raise and speak" interface. iOS does NOT
+        // do this; see the file header comment for the rationale.
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active && autoStart {
+                viewModel.startRecordingIfIdle()
+            }
+        }
         .onChange(of: WatchConnectivityManager.shared.configReceived) { _, received in
             if received {
                 viewModel.refreshConfiguration()

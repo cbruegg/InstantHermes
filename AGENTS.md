@@ -31,6 +31,13 @@ InstantHermes is a voice interface for [Hermes](https://github.com/NousResearch/
 - iPhone app first, watchOS companion second
 - Default mode is MVP
 
+## Design Decisions
+
+### Auto-start recording on resume (watchOS only)
+- **watchOS**: Auto-starts recording on launch AND when the app resumes (scene becomes active). This is intentional — the watch is a "raise and speak" interface where reopening the app should immediately begin recording.
+- **iOS**: Auto-starts on launch only. Does NOT auto-start on resume. This is also intentional — the iPhone app has tabs (Record, Settings); auto-starting on every resume would be surprising when the user just wants to check settings.
+- Do not "fix" this platform difference — it is by design.
+
 ## Project Overview
 
 - **iOS App**: `InstantHermes` — Main app for iPhone/iPad

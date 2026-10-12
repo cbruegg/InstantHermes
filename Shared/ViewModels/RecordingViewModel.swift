@@ -46,6 +46,10 @@ final class RecordingViewModel: ObservableObject {
     private let configStore: AppConfigStore
     private var levelMonitorTimer: AnyCancellable?
     private var recordingID: UUID?
+    /// Set synchronously when `startRecording()` begins, before any `await`.
+    /// Prevents concurrent calls (e.g. `onAppear` + `onChange(of: scenePhase)`
+    /// both firing on launch) from reaching `installTap` twice.
+    private var isStarting = false
     /// The in-flight submit task. Stored so cancel can interrupt it before
     /// the submit POST is sent (e.g. user taps Cancel while chunks are
     /// still being flushed).
@@ -79,15 +83,22 @@ final class RecordingViewModel: ObservableObject {
         // Always re-check config — the user may have changed settings
         // while this view model was alive (e.g. on the iOS Settings tab).
         refreshConfiguration()
-        guard state == .idle else { return }
+        // Guard synchronously — state is only set to .recording after the
+        // async start completes, so without this flag, two rapid calls
+        // (e.g. onAppear + scenePhase change) would both pass the check
+        // and double-install the audio tap.
+        guard state == .idle, !isStarting else { return }
         guard isConfigured else {
             errorMessage = AudioRecordingError.serverNotConfigured.localizedDescription
             return
         }
 
+        isStarting = true
+
         Task {
             let granted = await service.requestPermission()
             guard granted else {
+                isStarting = false
                 errorMessage = AudioRecordingError.permissionDenied.localizedDescription
                 return
             }
@@ -98,8 +109,10 @@ final class RecordingViewModel: ObservableObject {
                 errorMessage = nil
                 statusMessage = nil
                 state = .recording
+                isStarting = false
                 startLevelMonitorTimer()
             } catch {
+                isStarting = false
                 errorMessage = error.localizedDescription
             }
         }
@@ -189,6 +202,7 @@ final class RecordingViewModel: ObservableObject {
     private func cleanup() {
         stopLevelMonitorTimer()
         submitTask = nil
+        isStarting = false
         state = .idle
         audioLevel = 0
         recordingID = nil
