@@ -65,7 +65,11 @@ On the Raspberry Pi:
 
 ## Installation
 
-### User systemd service (recommended — no sudo needed)
+### User systemd service (recommended)
+
+Run these commands from the repository's `backend/` directory as the user
+that runs Hermes. Installing the user unit needs no root privileges; enabling
+lingering may require administrator approval.
 
 ```bash
 # Place the files in your home directory
@@ -90,15 +94,16 @@ curl http://$(tailscale ip -4):8643/health
 
 ### System systemd service (alternative — requires sudo)
 
-```bash
-sudo mkdir -p /opt/instanthermes-stt
-sudo cp server.py /opt/instanthermes-stt/
-sudo cp instanthermes-stt.service /etc/systemd/system/
-# Edit the unit to set User=<hermes-user>:
-#   sudo systemctl edit instanthermes-stt
-sudo systemctl daemon-reload
-sudo systemctl enable --now instanthermes-stt
-```
+Follow the [system-service installation instructions in the main README](../README.md#installation-system-systemd-service--requires-sudo),
+running those commands from the repository root. They provide a separate unit
+with an explicit Hermes user/home, `/opt/instanthermes-stt/server.py` as the
+executable path, and `multi-user.target` for boot startup. Do **not** install
+the supplied user unit unchanged under `/etc/systemd/system/`: `%h` does not
+resolve to `User=`'s home in a system unit.
+
+For a system installation, replace `systemctl --user` with `sudo systemctl`
+and `journalctl --user` with `sudo journalctl` throughout this README. Disable
+any existing user-service instance before starting the system service.
 
 ## Testing
 

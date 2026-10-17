@@ -111,7 +111,11 @@ The backend is a single-file, stdlib-only Python service (`backend/server.py`) t
 4. POSTs the transcript to the Hermes API (`/v1/runs`) with a voice context prepended
 5. If a delivery target is set, polls the run and delivers the response via `hermes send`
 
-### Installation (user systemd service — recommended, no sudo)
+### Installation (user systemd service — recommended)
+
+Run these commands from the repository root as the user that runs Hermes.
+Installing the user unit does not require root; enabling lingering may require
+administrator approval.
 
 ```bash
 # On the server:
@@ -139,20 +143,60 @@ curl http://$(tailscale ip -4):8643/health
 
 ### Installation (system systemd service — requires sudo)
 
+The supplied unit is a **user** unit: its `%h` path and `default.target` are
+not suitable for this system-wide installation. From the repository root:
+
 ```bash
 sudo mkdir -p /opt/instanthermes-stt
 sudo cp backend/server.py /opt/instanthermes-stt/
-sudo cp backend/instanthermes-stt.service /etc/systemd/system/
+# Create a separate system unit (do not copy the supplied user unit):
+sudoedit /etc/systemd/system/instanthermes-stt.service
+```
 
-# Edit the unit to run as the Hermes user (so ~/.hermes/.env resolves):
-sudo systemctl edit instanthermes-stt
-# Add:
-#   [Service]
-#   User=<hermes-user>
+Save the following unit, replacing `<hermes-user>` and `/home/<hermes-user>`
+with the existing Hermes account and its actual home directory. Adjust `PATH`
+to include the directories containing `hermes`, `tailscale`, and `ffmpeg` on
+your server; systemd does not source your shell startup files.
 
+```ini
+[Unit]
+Description=InstantHermes STT backend (Mistral Voxtral)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=<hermes-user>
+Environment="HOME=/home/<hermes-user>"
+Environment="PATH=/home/<hermes-user>/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+ExecStart=/usr/bin/python3 -u /opt/instanthermes-stt/server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The account must be able to read its `~/.hermes/.env` and use the Hermes CLI.
+If migrating an existing installation, remove any old drop-in overrides that
+conflict with this unit (`sudo systemctl cat instanthermes-stt` shows them).
+Stop and disable any user-service instance before starting the system service,
+so they do not compete for port 8643:
+
+```bash
+# Run as the Hermes user, if the user service was previously installed:
+systemctl --user disable --now instanthermes-stt
+
+# Start the system service:
 sudo systemctl daemon-reload
 sudo systemctl enable --now instanthermes-stt
+sudo systemctl status instanthermes-stt
+curl http://$(tailscale ip -4):8643/health
 ```
+
+For this installation, use `sudo journalctl -u instanthermes-stt -f` for logs
+and `sudo systemctl status instanthermes-stt` for status, rather than the
+`--user` commands shown elsewhere in this README.
 
 ### Verifying the backend
 
