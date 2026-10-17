@@ -386,4 +386,4 @@ The project uses Xcode's **file system synchronized groups** (`PBXFileSystemSync
 
 ## License
 
-See [LICENSE](LICENSE) if present, or contact the author.
+Licensed under the [MIT License](LICENSE).
