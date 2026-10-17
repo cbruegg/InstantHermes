@@ -192,12 +192,23 @@ The background sweeper thread also cleans up stale processing entries (worker
 thread died without unregistering, e.g. OOM kill). A processing entry is stale
 after ~7 minutes (transcription + Hermes submission + response polling + margin).
 
-## Security
+## Privacy and security
+
+The Tailscale connection protects app-to-backend traffic when correctly routed;
+it does not keep all processing inside the tailnet. On submit, the backend sends
+the recording to **Mistral's cloud API over HTTPS** for transcription. Mistral's
+data-handling and retention terms apply. The transcript then goes to Hermes,
+whose configured model providers and tools may send data to other services.
+Optional response delivery sends the final response through the chosen platform.
+
+Logs can contain agent output and upstream error details, and `hermes send`
+receives response text as a local process argument. Limit access to the server
+and its logs. Audio conversion fallback can create temporary audio files.
 
 - Binds **only** to the machine's Tailscale IPv4 (never LAN)
 - Requires bearer auth matching `API_SERVER_KEY` (same key as Hermes)
 - 25 MB per-recording cap
 - 10-minute idle TTL (sweeper deletes abandoned recordings)
 - ~7-minute stale TTL for processing entries (sweeper cleans up dead workers)
-- Mistral API key never leaves the raspi
+- Mistral API key is read on the server and sent to Mistral over HTTPS for authentication; it is not distributed to the apps
 - Cancel and keepalive actions are authenticated (same bearer token)

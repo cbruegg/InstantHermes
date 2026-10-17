@@ -28,7 +28,19 @@ Hermes response delivered to your chosen platform (Matrix, Telegram, etc.)
 - **Shared code** — All recording logic, networking, and UI is shared between iOS and watchOS via a `Shared/` directory compiled into both targets
 - **Cancellation** — Cancel at any point before the Hermes POST; the backend aborts processing
 - **Liveness detection** — After submit, the app sends keepalive pings; if the app dies or goes out of range, the backend aborts before submitting to Hermes
-- **Secure** — All traffic stays inside the Tailscale network (WireGuard end-to-end encrypted). The backend binds only to the Tailscale IP. Bearer auth with a shared API key.
+- **VPN transport** — App-to-server traffic is intended to travel through Tailscale (WireGuard-encrypted). The backend binds to the Tailscale IP, falling back to loopback if unavailable, and uses bearer auth with a shared API key. Audio is sent onward to Mistral for cloud transcription.
+
+## Privacy and data flow
+
+This is **not an entirely local or tailnet-only audio-processing system**:
+
+- The app streams microphone audio to your backend over HTTP. Use a Tailscale hostname that routes through your tailnet; the app does not verify that Tailscale protects the connection.
+- On submit, the backend uploads the reassembled audio to **Mistral's cloud API over HTTPS** for transcription. Mistral's data-handling and retention terms apply; review them before sending sensitive recordings.
+- The transcript is sent to your Hermes instance. Further processing depends on your Hermes configuration, including its model providers and tools.
+- If you choose a reply platform, the final response is sent through that platform using `hermes send`; that platform's privacy policies also apply.
+- Backend logs can contain agent output and upstream error details. Response delivery also passes response text as a local process argument. Restrict access to the server and its logs. Audio conversion fallback can create temporary audio files on the server.
+
+Tailscale protects the app-to-server leg when correctly configured; it does not prevent the backend or Hermes from sending data to external services.
 
 ## Prerequisites
 
@@ -318,10 +330,10 @@ Bandwidth is ~64 KB/s over the tailnet — trivial.
 
 ### Security model
 
-- **Transport**: All traffic flows through Tailscale (WireGuard end-to-end encryption). Tailscale's coordination servers only do key exchange — they never see packet contents.
+- **Transport**: App-to-server HTTP relies on correct Tailscale routing for WireGuard encryption; the app does not enforce VPN use. Backend-to-Mistral audio uploads use HTTPS over the internet. Hermes model/tool calls and reply delivery may contact other external services.
 - **Authentication**: Both the app and the backend use `Authorization: Bearer <API_SERVER_KEY>` — the same key as Hermes.
 - **Key storage**: The API key is stored in the iOS/watch Keychain with `kSecAttrSynchronizable = false` (never synced to iCloud).
-- **Mistral key**: Never leaves the server — only the backend reads it from `~/.hermes/.env`.
+- **Mistral key**: Read by the backend from `~/.hermes/.env` and sent to Mistral over HTTPS for authentication. It is not distributed to the iPhone or watch apps.
 - **Cancellation invariant**: The backend's `POST /v1/runs` (the only request that turns audio into a Hermes message) fires only if the recording was submitted, not cancelled, and the client is still alive (keepalive freshness checked).
 
 ### Project structure
