@@ -16,6 +16,9 @@
         }
       }
     },
+    "Connection lost — couldn't reach the server" : {
+
+    },
     "Failed to configure audio session: %@" : {
       "comment" : "Error message shown when the audio session fails to configure. %@ is replaced with the underlying error description.",
       "extractionState" : "manual",

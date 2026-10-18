@@ -144,18 +144,18 @@ final class RecordingViewModel: ObservableObject {
         submitTask?.cancel()
         submitTask = nil
 
-        let wasRecording = state == .recording
+        // Reset the UI state synchronously — cancel is local-first. The engine
+        // stop and the best-effort backend cancel continue in the background
+        // and must not block the state machine: when the backend is
+        // unreachable the upload queue cannot drain, and waiting for it left
+        // the app stuck on the recording screen with a Cancel button that
+        // appeared dead.
+        cleanup()
 
         Task {
-            if wasRecording {
-                // Stop the engine first so no further chunks are streamed,
-                // then tell the backend to discard the recording.
-                await service.stop()
-            }
-            // Tell the backend to cancel — works for both spooled (pre-submit)
-            // and processing (post-202) recordings.
+            // Stops the engine, drops pending uploads, and tells the backend
+            // to discard the recording (best-effort).
             await service.cancel(recordingID: id)
-            await MainActor.run { cleanup() }
         }
     }
 
@@ -190,7 +190,12 @@ final class RecordingViewModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     statusMessage = nil
-                    errorMessage = error.localizedDescription
+                    // A cancelled submit (the user tapped Cancel while the POST
+                    // was in flight) is not an error — the cancel path already
+                    // reset the UI.
+                    if !Task.isCancelled {
+                        errorMessage = error.localizedDescription
+                    }
                     cleanup()
                 }
             }
@@ -220,13 +225,23 @@ final class RecordingViewModel: ObservableObject {
         levelMonitorTimer = nil
     }
 
-    /// Polls the service at 30 fps: updates the audio level for visualization
-    /// and auto-submits when the user stops speaking.
+    /// Polls the service at 30 fps: stops on permanent upload failure,
+    /// updates the audio level for visualization, and auto-submits when the
+    /// user stops speaking.
     private func startLevelMonitorTimer() {
         levelMonitorTimer = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 guard let self else { return }
+
+                // Stop immediately when an upload has permanently failed
+                // (e.g. the backend is unreachable) — otherwise the user
+                // records into the void until the silence auto-submit fires
+                // and fails.
+                if self.service.hasUploadError {
+                    self.handleConnectionLost()
+                    return
+                }
 
                 // Update audio level for visualization (scaled + smoothed).
                 let rawRMS = self.service.currentRMS
@@ -238,5 +253,14 @@ final class RecordingViewModel: ObservableObject {
                     self.submitRecording()
                 }
             }
+    }
+
+    /// Stops recording because a chunk upload permanently failed (the backend
+    /// is unreachable). Discards the recording (best-effort backend cancel)
+    /// and shows an error instead of recording into the void.
+    private func handleConnectionLost() {
+        guard state == .recording else { return }
+        errorMessage = String(localized: "Connection lost — couldn't reach the server")
+        cancelRecording()
     }
 }
