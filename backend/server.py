@@ -374,11 +374,17 @@ def wait_for_run_output(run_id: str):
             continue
 
         status = run.get("status", "")
-        if run.get("completed") or status in RUN_TERMINAL_STATES:
+        # Successful completion is `status == "completed"` (current Hermes run
+        # projection) or a truthy `completed` boolean (older Hermes versions).
+        # Keying off `status` keeps this working across both response shapes;
+        # any other terminal state (failed/cancelled/...) means no delivery.
+        completed = bool(run.get("completed")) or status == "completed"
+        if completed or status in RUN_TERMINAL_STATES:
             output = (run.get("output") or "").strip()
-            if run.get("completed") and output:
+            if completed and output:
                 return output
-            print(f"Run {run_id}: ended (status={status}, completed={run.get('completed')}), output={output!r}")
+            error = (run.get("error") or "").strip()
+            print(f"Run {run_id}: ended (status={status}, completed={run.get('completed')}), output={output!r}, error={error!r}")
             return None
         time.sleep(RUN_POLL_INTERVAL)
 
