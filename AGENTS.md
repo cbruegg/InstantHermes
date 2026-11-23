@@ -26,8 +26,8 @@ Interactive TTS conversation is not implemented. Do not describe planned behavio
 
 ## Design Decisions
 
-### Auto-start recording on resume (watchOS only)
-- **watchOS**: Auto-starts recording when the recording view appears AND when the app resumes (scene becomes active), provided it is configured and idle. This is intentional — the watch is a "raise and speak" interface.
+### Auto-start recording per foreground visit (watchOS only)
+- **watchOS**: Automatically attempts recording once per foreground visit, when active, configured, and idle. Backgrounding rearms it for reopening an already-running app. Inactive/active wrist cycles, repeated view appearances, and config sync do not restart recording after submission, cancellation, or a failed start. Start Recording remains available for another recording in the same visit. Backgrounding is a lifecycle approximation of leaving, not proof of an explicit dismissal.
 - **iOS**: Auto-starts when the recording view appears. Does NOT auto-start just because the scene resumes. This is intentional — the iPhone app has tabs (Record, Settings); auto-starting on every resume would be surprising when the user just wants to check settings.
 - Do not "fix" this platform difference — it is by design.
 

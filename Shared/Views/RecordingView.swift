@@ -7,14 +7,13 @@
 //
 //  Platform differences are handled via conditional compilation:
 //  - watchOS: observes WatchConnectivity for config sync from iPhone,
-//    auto-starts recording on launch AND on resume (scenePhase → .active),
+//    auto-starts recording once per foreground visit,
 //    compact layout.
 //  - iOS: config is local (edited in the Settings tab), auto-starts on
 //    launch only (no auto-start on resume), larger layout.
 //
-//  The watchOS-only auto-start-on-resume is intentional: the watch app is
-//  a "glance and speak" interface where reopening the app should immediately
-//  begin recording. On iOS, the app is a full app with tabs; auto-starting
+//  On watchOS, reopening after backgrounding starts recording, but waking
+//  the same foreground visit with a wrist raise does not. On iOS, the app has tabs; auto-starting
 //  on every resume would be surprising when the user just wants to check
 //  settings or history.
 //
@@ -27,6 +26,7 @@ struct RecordingView: View {
     @StateObject private var viewModel = RecordingViewModel()
     #if os(watchOS)
     @Environment(\.scenePhase) private var scenePhase
+    @State private var autoStartPolicy = RecordingAutoStartPolicy()
     #endif
 
     /// Whether to auto-start recording when the view appears and config is ready.
@@ -80,27 +80,18 @@ struct RecordingView: View {
         .onAppear {
             viewModel.checkConfiguration()
             // Start recording immediately on launch (if configured)
-            if autoStart {
-                viewModel.startRecordingIfIdle()
-            }
+            startAutomaticallyIfNeeded()
         }
         #if os(watchOS)
-        // INTENTIONAL watchOS-only behavior: auto-start recording when the
-        // app resumes (user reopens the already-running app). This is by
-        // design — the watch is a "raise and speak" interface. iOS does NOT
-        // do this; see the file header comment for the rationale.
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active && autoStart {
-                viewModel.startRecordingIfIdle()
-            }
+        // Observe background as well as active; inactive alone never rearms.
+        .onChange(of: scenePhase) { _, _ in
+            startAutomaticallyIfNeeded()
         }
         .onChange(of: WatchConnectivityManager.shared.configReceived) { _, received in
             if received {
                 viewModel.refreshConfiguration()
                 // The config may have arrived after launch — start recording now
-                if autoStart {
-                    viewModel.startRecordingIfIdle()
-                }
+                startAutomaticallyIfNeeded()
             }
         }
         .onChange(of: WatchConnectivityManager.shared.lastReceivedConfig) { _, newConfig in
@@ -115,11 +106,28 @@ struct RecordingView: View {
 
     // MARK: - Controls
 
+    private func startAutomaticallyIfNeeded() {
+        #if os(watchOS)
+        guard autoStartPolicy.shouldStart(
+            in: scenePhase,
+            enabled: autoStart,
+            isConfigured: viewModel.isConfigured,
+            isIdle: viewModel.state == .idle
+        ) else { return }
+        #else
+        guard autoStart else { return }
+        #endif
+        viewModel.startRecordingIfIdle()
+    }
+
     @ViewBuilder
     private var controls: some View {
         switch viewModel.state {
         case .idle:
             Button("Start Recording") {
+                #if os(watchOS)
+                autoStartPolicy.recordingRequested()
+                #endif
                 viewModel.startRecording()
             }
             .buttonStyle(.borderedProminent)
