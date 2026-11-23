@@ -625,33 +625,7 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
         converter: AVAudioConverter,
         batcher: ChunkBatcher
     ) {
-        // Calculate output frame count based on sample rate ratio
-        let inputSampleRate = buffer.format.sampleRate
-        let outputSampleRate = Self.targetSampleRate
-        let ratio = outputSampleRate / inputSampleRate
-        let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024
-
-        guard let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: converter.outputFormat,
-            frameCapacity: outputFrameCount
-        ) else { return }
-
-        var error: NSError?
-        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            outStatus.pointee = .haveData
-            return buffer
-        }
-
-        let status = converter.convert(to: outputBuffer, error: &error, withInputFrom: inputBlock)
-        guard status != .error, error == nil else { return }
-
-        // Extract float32 samples as Data
-        let frameLength = Int(outputBuffer.frameLength)
-        guard frameLength > 0,
-              let channelData = outputBuffer.floatChannelData else { return }
-
-        let byteCount = frameLength * MemoryLayout<Float>.stride
-        let data = Data(bytes: channelData[0], count: byteCount)
+        guard let data = PCMConversion.convert(buffer, using: converter) else { return }
 
         // Enqueue on the batcher (actor-isolated, thread-safe)
         Task {
