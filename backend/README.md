@@ -217,3 +217,19 @@ and its logs. Audio conversion fallback can create temporary audio files.
 - ~7-minute stale TTL for processing entries (sweeper cleans up dead workers)
 - Mistral API key is read on the server and sent to Mistral over HTTPS for authentication; it is not distributed to the apps
 - Cancel and keepalive actions are authenticated (same bearer token)
+
+### Combined final chunk and acceptance
+
+Updated clients send `X-Action: finalize` with the remaining raw PCM float32
+bytes as the body (which may be empty). Headers are `X-Audio-Format:
+pcm-float32`, `X-Sample-Rate: 16000`, `X-Chunk-Sequence` (the next sequence
+number), `X-Chunk-Count` (the total including a nonempty final chunk), and
+optional `X-Delivery-Target`. Authentication and recording ID are unchanged.
+The server checks that all earlier chunks are present and that the declared
+count matches before returning 202. Missing or unexpected earlier chunks
+produce 409; invalid metadata produces 400. No transcription starts before
+acceptance. The legacy `submit` action remains supported.
+
+Deploy this backend before installing updated clients. Old backends reject the
+new action rather than silently accepting truncated audio. Do not downgrade
+the backend while updated clients are in use.

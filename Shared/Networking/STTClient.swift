@@ -51,7 +51,12 @@ struct ErrorResponse: Decodable {
 
 /// Client for the instanthermes-stt backend.
 /// All requests carry `Authorization: Bearer <apiKey>`.
-final class STTClient: Sendable {
+nonisolated protocol AudioUploadClient: Sendable {
+    func uploadChunk(recordingID: UUID, sequence: Int, data: Data) async throws
+    func submit(recordingID: UUID, deliveryTarget: String?, finalAudio: Data, finalSequence: Int) async throws
+}
+
+final class STTClient: AudioUploadClient {
     private let baseURL: URL
     private let apiKey: String
     private let session: URLSession
@@ -106,17 +111,22 @@ final class STTClient: Sendable {
     ///     Hermes idempotency key).
     ///   - deliveryTarget: Where the backend should deliver the Hermes response
     ///     (e.g. "matrix"), or nil/empty for no delivery.
-    func submit(recordingID: UUID, deliveryTarget: String? = nil) async throws {
+    func submit(recordingID: UUID, deliveryTarget: String? = nil,
+                finalAudio: Data, finalSequence: Int) async throws {
         var request = URLRequest(url: baseURL.appendingPathComponent("audio"))
         request.httpMethod = "POST"
         request.timeoutInterval = 15
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue(recordingID.uuidString, forHTTPHeaderField: "X-Recording-ID")
-        request.setValue("submit", forHTTPHeaderField: "X-Action")
-        if let target = deliveryTarget, !target.isEmpty {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(["delivery_target": target])
-        }
+        request.setValue("finalize", forHTTPHeaderField: "X-Action")
+        request.setValue("pcm-float32", forHTTPHeaderField: "X-Audio-Format")
+        request.setValue("16000", forHTTPHeaderField: "X-Sample-Rate")
+        request.setValue("\(finalSequence)", forHTTPHeaderField: "X-Chunk-Sequence")
+        let total = finalSequence + (finalAudio.isEmpty ? 0 : 1)
+        request.setValue("\(total)", forHTTPHeaderField: "X-Chunk-Count")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue(deliveryTarget ?? "", forHTTPHeaderField: "X-Delivery-Target")
+        request.httpBody = finalAudio
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {

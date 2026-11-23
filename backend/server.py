@@ -618,6 +618,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
             return
 
+        if action == "finalize":
+            self._handle_finalize(recording_id)
+            return
+
         if action == "submit":
             self._handle_submit(recording_id)
             return
@@ -671,16 +675,65 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError):
                 pass  # ignore a malformed body — proceed without a target
 
+        self._accept_recording(recording_id, rec, delivery_target)
+
+    def _handle_finalize(self, recording_id: str):
+        """Atomically append the final PCM chunk and accept only complete audio."""
+        try:
+            sequence = int(self.headers.get("X-Chunk-Sequence", ""))
+            count = int(self.headers.get("X-Chunk-Count", ""))
+            length = int(self.headers.get("Content-Length", "0"))
+            if not (0 <= sequence <= MAX_BYTES // 4 and 0 < count <= MAX_BYTES // 4
+                    and 0 <= length <= MAX_BYTES and length % 4 == 0
+                    and count == sequence + bool(length)):
+                raise ValueError()
+        except ValueError:
+            self._send_json(400, {"error": "invalid final chunk metadata"})
+            return
+        if (self.headers.get("X-Audio-Format") != "pcm-float32"
+                or self.headers.get("X-Sample-Rate") != str(SAMPLE_RATE)):
+            self._send_json(400, {"error": "unsupported final audio format"})
+            return
+        data = self.rfile.read(length)
+        if len(data) != length:
+            self._send_json(400, {"error": "truncated final chunk"})
+            return
+        if not MISTRAL_KEY:
+            self._send_json(503, {"error": "stt_unavailable"})
+            return
+        with lock:
+            rec = recordings.get(recording_id)
+            if rec is None:
+                rec = {"chunks": {}, "format": "pcm-float32", "total_bytes": 0}
+            if rec["format"] != "pcm-float32":
+                self._send_json(400, {"error": "format mismatch"})
+                return
+            chunks = dict(rec["chunks"])
+            # Earlier uploads must be exactly 0..<sequence. Never overwrite
+            # an acknowledged chunk or silently accept a missing trailing chunk.
+            if len(chunks) != sequence or any(i not in chunks for i in range(sequence)):
+                self._send_json(409, {"error": "audio_incomplete"})
+                return
+            if length:
+                chunks[sequence] = data
+            if sum(map(len, chunks.values())) > MAX_BYTES:
+                self._send_json(413, {"error": "recording too large"})
+                return
+            recordings.pop(recording_id, None)
+        self._accept_recording(recording_id, {"chunks": chunks, "format": "pcm-float32"},
+                               self.headers.get("X-Delivery-Target", ""))
+
+    def _accept_recording(self, recording_id: str, rec: dict, delivery_target: str):
+        chunks = rec["chunks"]
+        max_seq = max(chunks)
         # Concatenate in sequence order
         raw_audio = b"".join(chunks[s] for s in range(max_seq + 1))
         audio_format = rec.get("format", "pcm-float32")
 
-        # Accept immediately; transcribe + forward to Hermes in the background
-        self._send_json(202, {"status": "accepted"})
-
         # Register in the processing dict so cancel/keepalive actions can reach
         # the worker thread. The worker unregisters itself when done.
         register_processing(recording_id, self.client_address[0])
+        self._send_json(202, {"status": "accepted"})
 
         worker = threading.Thread(
             target=process_recording,

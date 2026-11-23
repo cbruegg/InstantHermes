@@ -69,9 +69,9 @@ protocol AudioRecordingService: AnyObject {
     /// Throws on audio session, engine, or configuration failure.
     func start() async throws -> UUID
 
-    /// Stops recording immediately. Flushes any pending batched chunks and
-    /// waits (bounded) for in-flight uploads so a following submit sees a
-    /// consistent queue. Does not send any submit/cancel signal. Also stops
+    /// Stops capture and waits for tap deliveries to reach the batcher.
+    /// Session deactivation continues independently; submit drains uploads
+    /// and sends the final partial chunk with acceptance. Does not send any submit/cancel signal. Also stops
     /// any active keepalive timer.
     func stop() async
 
@@ -235,7 +235,7 @@ actor ChunkBatcher {
     private let flushSizeThreshold: Int = 65536
 
     private let recordingID: UUID
-    private let sttClient: STTClient
+    private let sttClient: any AudioUploadClient
     private let errorFlag: UploadErrorFlag
     private var sequence: Int = 0
 
@@ -248,7 +248,7 @@ actor ChunkBatcher {
         let data: Data
     }
 
-    init(recordingID: UUID, sttClient: STTClient, errorFlag: UploadErrorFlag) {
+    init(recordingID: UUID, sttClient: any AudioUploadClient, errorFlag: UploadErrorFlag) {
         self.recordingID = recordingID
         self.sttClient = sttClient
         self.errorFlag = errorFlag
@@ -264,10 +264,19 @@ actor ChunkBatcher {
         }
     }
 
-    /// Flushes any remaining buffered data. Call when recording stops.
-    func flushAll() {
-        guard !buffer.isEmpty else { return }
-        flush(now: Date())
+    /// Retains the final partial chunk until all earlier uploads are acknowledged.
+    func finalize(deliveryTarget: String?) async throws {
+        guard await waitForUploads() else {
+            try Task.checkCancellation()
+            throw AudioRecordingError.uploadFailed(URLError(.timedOut))
+        }
+        try Task.checkCancellation()
+        if let error = errorFlag.getAndClear() {
+            throw AudioRecordingError.uploadFailed(error)
+        }
+        try await sttClient.submit(recordingID: recordingID, deliveryTarget: deliveryTarget,
+                                   finalAudio: buffer, finalSequence: sequence)
+        buffer.removeAll()
     }
 
     /// Waits for all in-flight uploads to complete.
@@ -277,11 +286,12 @@ actor ChunkBatcher {
     ///   clear upload error instead of hanging on a queue that cannot drain.
     /// - Note: Returns as soon as the calling task is cancelled — a cancelled
     ///   caller must not wait (or spin) until the queue drains.
-    func waitForUploads(timeout: TimeInterval = 30) async {
+    func waitForUploads(timeout: TimeInterval = 30) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !Task.isCancelled && (isProcessing || !serialQueue.isEmpty) && Date() < deadline {
             try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
         }
+        return !isProcessing && serialQueue.isEmpty
     }
 
     /// Drops all queued (not yet started) uploads; the in-flight upload, if
@@ -364,6 +374,7 @@ actor ChunkBatcher {
 final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable {
     private let audioEngine = AVAudioEngine()
     private let cancellationToken = CancellationToken()
+    private let pendingEnqueues = DispatchGroup()
     private let silenceDetector = SilenceDetector()
     /// Latest chunk-upload error, shared with the batcher and readable
     /// synchronously by the view model's level timer.
@@ -378,6 +389,7 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
     /// the previous teardown is still running — start() awaits this task
     /// before reconfiguring the engine.
     private var teardownTask: Task<Void, Never>?
+    private var captureStopTask: Task<Void, Never>?
 
     // MARK: Keepalive
 
@@ -421,6 +433,7 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
         // while the previous engine stop is still running — wait for it.
         await teardownTask?.value
         teardownTask = nil
+        captureStopTask = nil
 
         // Cancel any existing keepalive from a previous recording
         keepaliveTask?.cancel()
@@ -488,13 +501,14 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
                 let detector = self.silenceDetector
                 let conv = pcmConverter
                 let batch = newBatcher
+                let pending = self.pendingEnqueues
 
                 inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, _ in
                     guard !token.isCancelled else { return }
                     detector.processBuffer(buffer)
 
                     // Convert PCM to 16 kHz mono and enqueue
-                    Self.convertAndEnqueue(buffer: buffer, converter: conv, batcher: batch)
+                    Self.convertAndEnqueue(buffer: buffer, converter: conv, batcher: batch, pending: pending)
                 }
 
                 do {
@@ -514,20 +528,29 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
         keepaliveTask?.cancel()
         keepaliveTask = nil
 
-        await stopEngine()
-
-        // Flush remaining batched chunks and wait for in-flight uploads so
-        // the following submit sees a consistent queue. Bounded: when the
-        // backend is unreachable, each chunk can take tens of seconds to
-        // exhaust its retries.
-        await batcher?.flushAll()
-        await batcher?.waitForUploads(timeout: 30)
+        beginShutdown()
+        await captureStopTask?.value
+        // Every tap delivery must reach the batcher before the final chunk is sealed.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            pendingEnqueues.notify(queue: .global(qos: .userInitiated)) {
+                continuation.resume()
+            }
+        }
     }
 
-    /// Stops the audio engine, removes the input tap, and deactivates the
-    /// audio session. Engine/session calls can block, so they run on a
-    /// background queue while the caller is suspended.
-    private func stopEngine() async {
+    /// Establish both tasks synchronously so cancellation cannot start a second
+    /// engine teardown while stop() is suspended. A new recording awaits teardown.
+    private func beginShutdown() {
+        guard captureStopTask == nil else { return }
+        let capture = Task { await self.stopCapture() }
+        captureStopTask = capture
+        teardownTask = Task {
+            await capture.value
+            await self.deactivateSession()
+        }
+    }
+
+    private func stopCapture() async {
         // Stop audio engine on a background queue — stop() can block.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -537,6 +560,9 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
             }
         }
 
+    }
+
+    private func deactivateSession() async {
         // Deactivate audio session on background queue — setActive can block.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -547,16 +573,10 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
     }
 
     func submit(recordingID: UUID, deliveryTarget: String? = nil) async throws {
-        // Check for upload errors first
-        if let error = await batcher?.getAndClearError() {
-            throw AudioRecordingError.uploadFailed(error)
-        }
-
-        guard let client = sttClient else {
+        guard let client = sttClient, let batcher else {
             throw AudioRecordingError.serverNotConfigured
         }
-
-        try await client.submit(recordingID: recordingID, deliveryTarget: deliveryTarget)
+        try await batcher.finalize(deliveryTarget: deliveryTarget)
 
         // 202 accepted — start keepalive timer so the backend can detect
         // if this client disconnects during processing.
@@ -577,9 +597,10 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
         let client = sttClient
         let batcher = self.batcher
 
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await self.stopEngine()
+        beginShutdown()
+        let previousTeardown = teardownTask
+        let task = Task {
+            await previousTeardown?.value
             // Drop queued uploads — the backend is told to discard the
             // recording, so uploading the remaining chunks is pointless
             // (and during an outage the queue cannot drain anyway).
@@ -623,13 +644,16 @@ final class AVAudioRecordingService: AudioRecordingService, @unchecked Sendable 
     private static func convertAndEnqueue(
         buffer: AVAudioPCMBuffer,
         converter: AVAudioConverter,
-        batcher: ChunkBatcher
+        batcher: ChunkBatcher,
+        pending: DispatchGroup
     ) {
         guard let data = PCMConversion.convert(buffer, using: converter) else { return }
 
-        // Enqueue on the batcher (actor-isolated, thread-safe)
+        // Register synchronously so stopping capture can await all tap deliveries.
+        pending.enter()
         Task {
             await batcher.add(data)
+            pending.leave()
         }
     }
 }
